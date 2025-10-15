@@ -4,11 +4,11 @@ import { MaterialIcons } from "@expo/vector-icons";
 
 function SecondaryButton({ onPress, name, styles, text, text2 }) {
     return <View >
-        <Pressable onPress={onPress} style={({ pressed }) => pressed && styless.pressed}>
+        <Pressable onPress={onPress} style={({ pressed }) => pressed && styles.pressed}>
             <View style={styles}>
                 <MaterialIcons name={name} size={40} color="white" />
-                <Text style={styless.textButton}>{text}</Text>
-                <Text style={styless.textButton}>{text2}</Text>
+                <Text style={styles.textButton}>{text}</Text>
+                <Text style={styles.textButton}>{text2}</Text>
             </View>
         </Pressable>
     </View>
@@ -16,7 +16,7 @@ function SecondaryButton({ onPress, name, styles, text, text2 }) {
 
 export default SecondaryButton;
 
-const styless = StyleSheet.create({
+const styles = StyleSheet.create({
     pressed: {
         opacity: 0.5
     },

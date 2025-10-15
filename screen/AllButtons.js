@@ -16,7 +16,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { savePost } from "../util/Api";
 import { LinearGradient } from "expo-linear-gradient";
 import SecondaryButton from "../component/SecondaryButton";
-import * as Sentry from "sentry-expo";
+import AsyncStorage from "@react-native-async-storage/async-storage";
 
 const AllButtons = () => {
   const [showProgressBar, setShowProgressBar] = useState(false);
@@ -26,6 +26,8 @@ const AllButtons = () => {
   const screenHeight = Dimensions.get("window").height;
   const [altoBox, setAltoBox] = useState(screenHeight / 4);
   const [anchBox, setAnchBox] = useState(screenHeight / 4);
+  const [backgroundImage, setBackgroundImage] = useState("https://i.imgur.com/OGxH3he.png");
+  
   useEffect(() => {
     // Actualizar altoBox si la altura de la pantalla cambia
     setAltoBox(screenHeight / 4 - 20);
@@ -33,8 +35,26 @@ const AllButtons = () => {
   }, [screenHeight]); // Solo cuando cambia la altura de la pantalla
   //console.log("ancho", anchBox, screenWidth, "alto", altoBox, screenHeight);
 
+  useEffect(() => {
+    // Cargar imagen de fondo desde AsyncStorage
+    const loadPanicAppData = async () => {
+      try {
+        const storedData = await AsyncStorage.getItem("@licencias");
+        if (storedData) {
+          const parsedData = JSON.parse(storedData);
+          if (parsedData.panicAppData?.backgroundUrl) {
+            setBackgroundImage(parsedData.panicAppData.backgroundUrl);
+            console.log("Imagen de fondo cargada:", parsedData.panicAppData.backgroundUrl);
+          }
+        }
+      } catch (error) {
+        console.error("Error al cargar datos del panicapp:", error);
+      }
+    };
+    loadPanicAppData();
+  }, []);
+
   const handlePressIn = () => {
-    //Sentry.Native.captureException('120');
     setShowProgressBar(true);
     animatedValue.setValue(0);
     // Inicia la animación y usa el callback de start
@@ -70,7 +90,6 @@ const AllButtons = () => {
       console.log(`${eventType} enviado`, result);
     } catch (error) {
       console.error(error);
-      Sentry.Native.captureException(error);
     }
   };
 
@@ -83,7 +102,6 @@ const AllButtons = () => {
       console.log(`${eventType} enviado`, result);
     } catch (error) {
       console.error(error);
-      Sentry.Native.captureException(error);
     }
   };
 
@@ -96,7 +114,6 @@ const AllButtons = () => {
       console.log(`${eventType} enviado`, result);
     } catch (error) {
       console.error(error);
-      Sentry.Native.captureException(error);
     }
   };
 
@@ -109,13 +126,12 @@ const AllButtons = () => {
       console.log(`${eventType} enviado`, result);
     } catch (error) {
       console.error(error);
-      Sentry.Native.captureException(error);
     }
   };
 
   return (
     <ImageBackground
-      source={require("../assets/puenteVillaMaria.jpg")}
+      source={{ uri: backgroundImage }}
       resizeMode="cover"
       style={styles.rootScreen}
     >

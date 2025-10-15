@@ -8,22 +8,50 @@ import { useFonts } from "expo-font";
 import * as SplashScreen from "expo-splash-screen";
 import { useEffect, useState } from "react";
 import AsyncStorage from "@react-native-async-storage/async-storage";
-import * as Sentry from "sentry-expo";
 import AllButtons from "./screen/AllButtons";
 import Configuration from "./screen/Configuration";
 import User from "./screen/User";
-import welcome from "./screen/Welcome";
+import Welcome from "./screen/Welcome";
 import GrabarBorrar from "./component/GrabarBorrar";
 
 const Stack = createNativeStackNavigator();
 const BottomTabs = createBottomTabNavigator();
 
 function AuthorizedNavigation() {
+  const [logoUrl, setLogoUrl] = useState("https://i.imgur.com/aIYhRsN.png");
+  const [headerBgColor, setHeaderBgColor] = useState("white");
+  const [headerTxtColor, setHeaderTxtColor] = useState("Black");
+
+  useEffect(() => {
+    const loadPanicAppData = async () => {
+      try {
+        const storedData = await AsyncStorage.getItem("@licencias");
+        if (storedData) {
+          const parsedData = JSON.parse(storedData);
+          if (parsedData.panicAppData) {
+            if (parsedData.panicAppData.logoUrl) {
+              setLogoUrl(parsedData.panicAppData.logoUrl);
+            }
+            if (parsedData.panicAppData.headerBackgroundColor) {
+              setHeaderBgColor(parsedData.panicAppData.headerBackgroundColor);
+            }
+            if (parsedData.panicAppData.headerTextColor) {
+              setHeaderTxtColor(parsedData.panicAppData.headerTextColor);
+            }
+          }
+        }
+      } catch (error) {
+        console.error("Error al cargar datos del panicapp en header:", error);
+      }
+    };
+    loadPanicAppData();
+  }, []);
+
   return (
     <BottomTabs.Navigator
       screenOptions={{
-        headerStyle: { backgroundColor: "white", height: 120 },
-        headerTintColor: "Black",
+        headerStyle: { backgroundColor: headerBgColor, height: 120 },
+        headerTintColor: headerTxtColor,
         tabBarLabelStyle: { fontSize: 13, width: "100%", paddingBottom: 1 },
       }}
     >
@@ -38,7 +66,7 @@ function AuthorizedNavigation() {
           ),
           headerLeft: () => (
             <Image
-              source={require("./assets/logo_villamaria.png")}
+              source={{ uri: logoUrl }}
               style={{ width: 230, height: 80, marginLeft: 90, marginTop: -20 }}
             />
           ),
@@ -68,7 +96,7 @@ function NoAuthorizedNavigation() {
     >
       <BottomTabs.Screen
         name="Welcome"
-        component={welcome}
+        component={Welcome}
         options={{
           headerShown: false,
           tabBarStyle: { display: "none" },
@@ -121,16 +149,6 @@ export default function App() {
     prepare();
   }, []);
 
-  useEffect(() => {
-    // Inicializar Sentry
-    Sentry.init({
-      dsn: "https://ac5efa908f3d120b5621cbc5c631f296@o4509000362295296.ingest.us.sentry.io/4509000366555136",
-      // Puedes configurar otros parámetros aquí, como enviar información adicional
-      sendDefaultPii: true, // Permite enviar información personal identificable (si es necesario)
-      enableInExpoDevelopment: true,
-    });
-    Sentry.Native.captureException(new Error("¡en pantalla de app!"));
-  }, []); // El array vacío asegura que solo se ejecute una vez al inicio
 
   useEffect(() => {
     if (fontsLoaded && appIsReady) {
@@ -167,7 +185,7 @@ export default function App() {
               headerTintColor: "white",
             }}
           />
-          <Stack.Screen name="Welcome" component={welcome} />
+          <Stack.Screen name="Welcome" component={Welcome} />
           <Stack.Screen
             name="User"
             component={User}

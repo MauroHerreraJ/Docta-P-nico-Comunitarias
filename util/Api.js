@@ -1,13 +1,14 @@
 import axios from "axios";
 import AsyncStorage from "@react-native-async-storage/async-storage";
-import * as Sentry from "sentry-expo";
 
 // Define la URL base
-const API_URL = "https://desit-server-3e06b7680f25.herokuapp.com/api/v1/user";
+const API_URL = "https://desit-server-staging-2dab81ac495c.herokuapp.com/api/v1/user";
 const API_TOKEN =
-  "https://desit-server-3e06b7680f25.herokuapp.com/api/v1/auth/token";
+  "https://desit-server-staging-2dab81ac495c.herokuapp.com/api/v1/auth/token";
 const API_EVENT =
-  "https://desit-server-3e06b7680f25.herokuapp.com/api/v1/event";
+  "https://desit-server-staging-2dab81ac495c.herokuapp.com/api/v1/event";
+const API_PANICAPP =
+  "https://desit-server-staging-2dab81ac495c.herokuapp.com/api/v1/panic-app";
 
 // Función para hacer un POST
 export const postUserData = async (data) => {
@@ -20,7 +21,6 @@ export const postUserData = async (data) => {
 
     return response.data; // Devuelve los datos de la respuesta
   } catch (error) {
-    Sentry.Native.captureException(error);
     console.error("Error en el POST", error);
     throw error; // Lanza el error para manejarlo fuera de la función si es necesario
   }
@@ -37,9 +37,23 @@ export const postToken = async (dataToken) => {
     console.log(response.status);
     return response.data; // Devuelve los datos de la respuesta
   } catch (error) {
-    Sentry.Native.captureException(error);
     console.error("Error en el POST", error);
     throw error; // Lanza el error para manejarlo fuera de la función si es necesario
+  }
+};
+
+// Función para obtener datos del panicapp por código
+export const getPanicAppByCode = async (panicAppCode) => {
+  try {
+    const response = await axios.get(`${API_PANICAPP}/code/${panicAppCode}`, {
+      headers: {
+        "Content-Type": "application/json",
+      },
+    });
+    return response.data;
+  } catch (error) {
+    console.error("Error al obtener datos del panicapp:", error);
+    throw error;
   }
 };
 
@@ -71,10 +85,6 @@ export const savePost = async (newPost) => {
     //console.log(response.status)
     return response.data;
   } catch (error) {
-    Sentry.Native.configureScope((scope) => {
-      scope.setExtra("newPost", cuenta); // Agrega newPost como un "extra"
-    });
-    Sentry.Native.captureException(error);
     console.error("Error en savePost:", error);
     throw error;
   }
