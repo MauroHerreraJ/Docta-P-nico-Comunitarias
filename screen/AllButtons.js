@@ -61,7 +61,7 @@ const AllButtons = () => {
     Animated.timing(animatedValue, {
       toValue: 1,
       duration: 900,
-      useNativeDriver: false,
+      useNativeDriver: true,
     }).start(({ finished }) => {
       if (finished) {
         // La barra de progreso se llenó
@@ -76,9 +76,17 @@ const AllButtons = () => {
     animatedValue.stopAnimation();
     setShowProgressBar(false);
   };
-  const barWidth = animatedValue.interpolate({
+  
+  // Interpolación para el efecto de escala (crece desde el centro)
+  const scaleValue = animatedValue.interpolate({
     inputRange: [0, 1],
-    outputRange: ["0%", "100%"],
+    outputRange: [0, 1],
+  });
+  
+  // Interpolación para la opacidad
+  const opacityValue = animatedValue.interpolate({
+    inputRange: [0, 0.5, 1],
+    outputRange: [0.3, 0.6, 0.9],
   });
 
   const enviarEvento = async (eventType) => {
@@ -174,23 +182,34 @@ const AllButtons = () => {
       </View>
       <View style={[styles.buttonRow, { marginTop: altoBox / 20 }]}>
         <Pressable onPressIn={handlePressIn} onPressOut={handlePressOut}>
-          <View style={[styles.panicButton, , { height: altoBox + 5 }]}>
-            <Ionicons name="warning" size={60} color="white" />
-            <Text style={styles.textButton}>Pánico</Text>
+          <View style={styles.panicButtonWrapper}>
+            <View style={[styles.panicButton, { height: altoBox + 5 }]}>
+              {showProgressBar && (
+                <Animated.View 
+                  style={[
+                    styles.progressFillContainer,
+                    {
+                      transform: [{ scale: scaleValue }],
+                      opacity: opacityValue,
+                    }
+                  ]}
+                >
+                  <LinearGradient
+                    colors={["#ffeb3b", "#ffc107", "#ff9800"]}
+                    style={styles.progressFill}
+                    start={{ x: 0, y: 0 }}
+                    end={{ x: 1, y: 1 }}
+                  />
+                </Animated.View>
+              )}
+              <View style={styles.panicButtonContent}>
+                <Ionicons name="warning" size={60} color="white" />
+                <Text style={styles.textButton}>Pánico</Text>
+              </View>
+            </View>
           </View>
         </Pressable>
       </View>
-
-      {showProgressBar && (
-        <View style={styles.progressBarContainer}>
-          <Animated.View style={{ width: barWidth }}>
-            <LinearGradient
-              colors={["#ff7e5f", "#feb47b"]}
-              style={styles.progressBar}
-            />
-          </Animated.View>
-        </View>
-      )}
     </ImageBackground>
   );
 };
@@ -238,18 +257,26 @@ const styles = StyleSheet.create({
   },
   lightButton: {
     backgroundColor: GlobalStyles.colors.accent500,
+    opacity: 0.90,
   },
   sirenButton: {
     backgroundColor: GlobalStyles.colors.colorbuttonI,
+    opacity: 0.90,
   },
   deactivationButton: {
     backgroundColor: GlobalStyles.colors.gray500,
+    opacity: 0.90,
+  },
+  panicButtonWrapper: {
+    width: deviceWidth * 0.9,
   },
   panicButton: {
-    width: deviceWidth * 0.9,
-    borderRadius: 8,
-    overflow: Platform.OS === "android" ? "hidden" : "visible",
+    position: "relative",
+    width: "100%",
+    borderRadius: 26,
+    overflow: "hidden",
     backgroundColor: GlobalStyles.colors.titlecolor,
+    opacity: 0.90,
     elevation: 4,
     shadowColor: "black",
     shadowOpacity: 0.25,
@@ -258,20 +285,27 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
   },
+  progressFillContainer: {
+    position: "absolute",
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  progressFill: {
+    width: "200%",
+    height: "200%",
+    borderRadius: 1000,
+  },
+  panicButtonContent: {
+    alignItems: "center",
+    justifyContent: "center",
+    zIndex: 10,
+  },
   textButton: {
     color: "white",
     fontSize: 15,
-  },
-  progressBarContainer: {
-    width: "100%",
-    height: 15,
-    backgroundColor: "#e0e0e0",
-    borderRadius: 8,
-    overflow: "hidden",
-    marginTop: 10,
-  },
-  progressBar: {
-    height: "100%",
-    borderRadius: 8,
   },
 });

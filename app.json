@@ -2,7 +2,18 @@
   "expo": {
     "name": "Docta Villa Maria",
     "slug": "villamaria",
-    "version": "1.0.0",
+    "version": "1.0.1",
+    "orientation": "portrait",
+    "icon": "./assets/adaptive-icon.png",
+    "splash": {
+      "image": "./assets/logonuevo.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#0066CC"
+    },
+    "userInterfaceStyle": "light",
+    "assetBundlePatterns": [
+      "**/*"
+    ],
     "extra": {
       "eas": {
         "projectId": "59948c5f-7a90-456e-9ae3-ca80b120b70a"
@@ -14,10 +25,41 @@
     },
     "plugins": [
       "expo-asset",
-      "expo-font"
+      "expo-font",
+      [
+        "expo-splash-screen",
+        {
+          "backgroundColor": "#0066CC",
+          "image": "./assets/logonuevo.png",
+          "resizeMode": "contain",
+          "imageWidth": 200
+        }
+      ],
+      [
+        "expo-build-properties",
+        {
+          "android": {
+            "compileSdkVersion": 35,
+            "targetSdkVersion": 35,
+            "minSdkVersion": 24,
+            "buildToolsVersion": "35.0.0"
+          }
+        }
+      ]
     ],
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.pedrodarrigo.DesitAppV33"
+    },
     "android": {
-      "package": "com.pedrodarrigo.DesitAppV33"
+      "package": "com.pedrodarrigo.DesitAppV33",
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#0066CC"
+      }
+    },
+    "web": {
+      "favicon": "./assets/favicon.png"
     }
   }
 }

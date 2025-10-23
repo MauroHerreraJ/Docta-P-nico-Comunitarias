@@ -24,8 +24,7 @@ function Configuration() {
     panicAppCode: "",
     targetDeviceId: "",
     numberId: "",
-    Nombre: "",
-    Apellido: "",
+    Vecino: "",
     Documento: "",
     Direccion: "",
     Barrio: "",
@@ -55,8 +54,7 @@ function Configuration() {
 
   useEffect(() => {
     if (
-      licencias.Nombre &&
-      licencias.Apellido &&
+      licencias.Vecino &&
       licencias.Documento &&
       licencias.Direccion &&
       licencias.Barrio
@@ -81,8 +79,7 @@ function Configuration() {
         targetDeviceId: String(licencias.targetDeviceId).trim().padStart(4, '0'),
         numberId: String(licencias.numberId).trim().padStart(4, '0'),
         userCustomFields: [
-          { Nombre: licencias.Nombre },
-          { Apellido: licencias.Apellido },
+          { Vecino: licencias.Vecino },
           { Documento: licencias.Documento },
           { Direccion: licencias.Direccion },
           { Barrio: licencias.Barrio },
@@ -244,10 +241,10 @@ console.log("¿Es accepted?:", result?.licenseCreated?.status === "accepted");
                   <View style={styles.textContainer}>
                     <TextInput
                       style={styles.textImput}
-                      placeholder="Ingrese su nombre"
+                      placeholder="Ingrese vecino"
                       placeholderTextColor="#616060"
-                      onChangeText={(text) => handleChange("Nombre", text)}
-                      value={licencias.Nombre}
+                      onChangeText={(text) => handleChange("Vecino", text)}
+                      value={licencias.Vecino}
                     />
                     <MaterialIcons
                       name={"person"}
@@ -261,24 +258,7 @@ console.log("¿Es accepted?:", result?.licenseCreated?.status === "accepted");
                   <View style={styles.textContainer}>
                     <TextInput
                       style={styles.textImput}
-                      placeholder="Ingrese su apellido"
-                      placeholderTextColor="#616060"
-                      onChangeText={(text) => handleChange("Apellido", text)}
-                      value={licencias.Apellido}
-                    />
-                    <MaterialIcons
-                      name={"person"}
-                      size={24}
-                      color="#000"
-                      style={styles.icon}
-                    />
-                  </View>
-                </View>
-                <View>
-                  <View style={styles.textContainer}>
-                    <TextInput
-                      style={styles.textImput}
-                      placeholder="Ingrese su documento"
+                      placeholder="Ingrese Referencia"
                       placeholderTextColor="#616060"
                       keyboardType="numeric"
                       onChangeText={(text) => handleChange("Documento", text)}
@@ -296,7 +276,7 @@ console.log("¿Es accepted?:", result?.licenseCreated?.status === "accepted");
                   <View style={styles.textContainer}>
                     <TextInput
                       style={styles.textImput}
-                      placeholder="Ingrese su dirección"
+                      placeholder="Ingrese Ubicación"
                       placeholderTextColor="#616060"
                       onChangeText={(text) => handleChange("Direccion", text)}
                       value={licencias.Direccion}

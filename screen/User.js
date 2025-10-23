@@ -1,8 +1,9 @@
-import { Text, View, StyleSheet, Image, TouchableOpacity } from "react-native";
+import { Text, View, StyleSheet, Image, TouchableOpacity, ScrollView } from "react-native";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useEffect, useState } from "react";
 import { useCallback } from "react";
 import { useFocusEffect } from "@react-navigation/native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import ClaveModal from "../component/ClaveModal";
 
@@ -10,6 +11,7 @@ function User({ navigation }) {
   const [licencia, setLicencia] = useState(null);
   const [isModalVisible, setIsModalVisible] = useState(false);
   const [isBorrarAccess, setIsBorrarAccess] = useState(false);
+  const insets = useSafeAreaInsets();
 
   // Función para traducir el estado
   const translateStatus = (status) => {
@@ -75,11 +77,14 @@ function User({ navigation }) {
   if (!licencia) {
     return (
       <>
-        <View style={styles.withoutLicenseContainer}>
+        <ScrollView 
+          style={styles.scrollView}
+          contentContainerStyle={styles.withoutLicenseContainer}
+        >
           <View>
             <Text style={styles.withoutLicense}>No posee Licencia...</Text>
           </View>
-          <View style={styles.withoutLicenseImage}>
+          <View style={[styles.withoutLicenseImage, { paddingBottom: Math.max(insets.bottom, 20) }]}>
             <Image
               source={require("../assets/logonuevo.png")}
               style={{ width: 59, height: 59 }}
@@ -90,7 +95,7 @@ function User({ navigation }) {
               Producto desarrollado por Desit SA
             </Text>
           </TouchableOpacity>
-        </View>
+        </ScrollView>
       </>
     );
   }
@@ -120,7 +125,10 @@ function User({ navigation }) {
 
   return (
     <>
-      <View style={styles.dataContainer}>
+      <ScrollView 
+        style={styles.scrollView}
+        contentContainerStyle={styles.scrollContent}
+      >
         <View>
           <View style={styles.textContainer}>
             <Text style={styles.text}>Cuenta: </Text>
@@ -155,7 +163,7 @@ function User({ navigation }) {
             <View style={styles.underline}></View>
           </View>
         </View>
-        <View style={styles.container2}>
+        <View style={[styles.container2, { paddingBottom: Math.max(insets.bottom, 20) }]}>
           <View style={styles.imageContainer}>
             <Image
               source={require("../assets/logonuevo.png")}
@@ -172,7 +180,7 @@ function User({ navigation }) {
           </TouchableOpacity>
           <Text style={styles.textImage}>Version 6.0.1 Villa Maria</Text>
         </View>
-      </View>
+      </ScrollView>
       <ClaveModal
         visible={isModalVisible}
         onClose={closeClaveModal}
@@ -185,10 +193,14 @@ function User({ navigation }) {
 export default User;
 
 const styles = StyleSheet.create({
-  dataContainer: {
+  scrollView: {
     flex: 1,
+  },
+  scrollContent: {
+    flexGrow: 1,
     paddingHorizontal: 20,
     marginTop: 2,
+    justifyContent: 'space-between', // Separa el contenido superior del inferior
   },
   textContainer: {
     marginTop: 3,
@@ -228,10 +240,11 @@ const styles = StyleSheet.create({
     marginTop: 300,
   },
   withoutLicenseContainer: {
+    flexGrow: 1,
     alignItems: "center",
+    justifyContent: "center",
   },
   container2: {
-    marginTop: 10,
     alignItems: "center", // Asegurarse de que el contenido esté centrado
   },
 });

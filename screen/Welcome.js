@@ -13,6 +13,10 @@ import { SafeAreaView, SafeAreaProvider } from "react-native-safe-area-context";
 
 function Welcome({ navigation }) {
   const [isChecked, setIsChecked] = useState(false); // Estado del checkbox
+  
+  // Debug: Verificar si la imagen se carga
+  console.log("Welcome: Logo local cargado");
+  
   function pressHandler() {
     navigation.navigate("Configuration");
   }
