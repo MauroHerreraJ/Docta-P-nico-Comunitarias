@@ -178,7 +178,7 @@ function User({ navigation }) {
               Producto desarrollado por Desit SA
             </Text>
           </TouchableOpacity>
-          <Text style={styles.textImage}>Version 6.0.1 Villa Maria</Text>
+          <Text style={styles.textImage}>Version 6.0.1 Docta Comunitarias</Text>
         </View>
       </ScrollView>
       <ClaveModal

@@ -1,14 +1,18 @@
 import axios from "axios";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 
-// Define la URL base
-const API_URL = "https://desit-server-staging-2dab81ac495c.herokuapp.com/api/v1/user";
-const API_TOKEN =
-  "https://desit-server-staging-2dab81ac495c.herokuapp.com/api/v1/auth/token";
-const API_EVENT =
-  "https://desit-server-staging-2dab81ac495c.herokuapp.com/api/v1/event";
-const API_PANICAPP =
-  "https://desit-server-staging-2dab81ac495c.herokuapp.com/api/v1/panic-app";
+// 🔹 URL base centralizada - Cambia esta línea para actualizar todas las URLs
+const DEVELOP_URL = "https://desit-server-3e06b7680f25.herokuapp.com";
+
+const getBaseUrl = () => {
+  return DEVELOP_URL;
+};
+
+// 🔹 Endpoints existentes refactorizados
+const API_URL = `${getBaseUrl()}/api/v1/user`;
+const API_TOKEN = `${getBaseUrl()}/api/v1/auth/token`;
+const API_EVENT = `${getBaseUrl()}/api/v1/event`;
+const API_PANICAPP = `${getBaseUrl()}/api/v1/panic-app`;
 
 // Función para hacer un POST
 export const postUserData = async (data) => {
@@ -39,6 +43,21 @@ export const postToken = async (dataToken) => {
   } catch (error) {
     console.error("Error en el POST", error);
     throw error; // Lanza el error para manejarlo fuera de la función si es necesario
+  }
+};
+
+// Función para validar credenciales
+export const validateCredentials = async (data) => {
+  try {
+    const response = await axios.post(`${API_URL}/validate`, data, {
+      headers: {
+        "Content-Type": "application/json",
+      },
+    });
+    return response.data;
+  } catch (error) {
+    console.error("Error en la validación de credenciales:", error);
+    throw error;
   }
 };
 

@@ -11,7 +11,7 @@ import {
 import { useNavigation } from "@react-navigation/native";
 import { StyleSheet } from "react-native";
 import { useState, useEffect } from "react";
-import { postUserData, postToken, getPanicAppByCode } from "../util/Api";
+import { postUserData, postToken, getPanicAppByCode, validateCredentials } from "../util/Api";
 import { MaterialIcons } from "@expo/vector-icons";
 import { Dimensions } from "react-native";
 import SaveButton from "../component/SaveButton";
@@ -108,7 +108,7 @@ console.log("¿Es accepted?:", result?.licenseCreated?.status === "accepted");
 
         const dataToken = {
           grant_type: "authorization_code".toLowerCase(),
-          client_id: "g4Qar6R9X3pPUMxWTbhZH7V5JGFf",
+          client_id: "7R9dxaPej6g1DPJ30vw9QpeG1L5A",
           license_code: codigoExtraido, // Aquí se asigna el código extraído
         };
         console.log("Datos del segundo POST (token):", dataToken);
@@ -138,20 +138,48 @@ console.log("¿Es accepted?:", result?.licenseCreated?.status === "accepted");
       return; // Detiene la ejecución si no está habilitado el botón
     }
 
-    // Obtener datos del panicapp antes de avanzar
+    // Validar credenciales antes de avanzar
     try {
       setIsLoading(true);
+      
+      // Preparar datos para validación
+      const validationData = {
+        panicAppCode: String(licencias.panicAppCode).trim().toUpperCase(),
+        targetDeviceId: String(licencias.targetDeviceId).trim().padStart(4, '0'),
+        numberId: String(licencias.numberId).trim().padStart(4, '0'),
+      };
+
+      console.log("Validando credenciales:", validationData);
+      
+      // Validar credenciales
+      await validateCredentials(validationData);
+      console.log("Credenciales válidas");
+
+      // Obtener datos del panicapp después de validar
       const panicAppCode = String(licencias.panicAppCode).trim().toUpperCase();
       const panicAppInfo = await getPanicAppByCode(panicAppCode);
       console.log("Datos del PanicApp:", panicAppInfo);
       setPanicAppData(panicAppInfo);
       
       if (currentStep < 2) {
-        setCurrentStep(currentStep + 1); // Avanza al siguiente paso solo si el botón está habilitado
+        setCurrentStep(currentStep + 1); // Avanza al siguiente paso solo si la validación fue exitosa
       }
     } catch (error) {
-      console.error("Error al obtener datos del panicapp:", error);
-      alert("Código de panicapp inválido o no encontrado");
+      console.error("Error en la validación o al obtener datos del panicapp:", error);
+      if (error.response) {
+        // Error de respuesta del servidor
+        const status = error.response.status;
+        const message = error.response.data?.message || "Error al validar las credenciales";
+        if (status === 400 || status === 404) {
+          alert("Credenciales inválidas. Verifique los datos ingresados.");
+        } else {
+          alert(message);
+        }
+      } else if (error.message) {
+        alert(error.message);
+      } else {
+        alert("Error al validar las credenciales. Intente nuevamente.");
+      }
     } finally {
       setIsLoading(false);
     }
