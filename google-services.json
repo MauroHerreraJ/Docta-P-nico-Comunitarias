@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "541814841492",
+    "project_id": "pushappcomunitarias",
+    "storage_bucket": "pushappcomunitarias.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:541814841492:android:050050190bc8072cb81481",
+        "android_client_info": {
+          "package_name": "com.pedrodarrigo.DesitAppV33"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyCG5lcQi0haP73CMmF4dMNTv-oqglpBVVI"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

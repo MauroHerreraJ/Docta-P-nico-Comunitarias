@@ -12,6 +12,7 @@ import { useNavigation } from "@react-navigation/native";
 import { StyleSheet } from "react-native";
 import { useState, useEffect } from "react";
 import { postUserData, postToken, getPanicAppByCode, validateCredentials } from "../util/Api";
+import { registerForPushNotificationsAsync } from "../util/Notifications";
 import { MaterialIcons } from "@expo/vector-icons";
 import { Dimensions } from "react-native";
 import SaveButton from "../component/SaveButton";
@@ -108,7 +109,7 @@ console.log("¿Es accepted?:", result?.licenseCreated?.status === "accepted");
 
         const dataToken = {
           grant_type: "authorization_code".toLowerCase(),
-          client_id: "7R9dxaPej6g1DPJ30vw9QpeG1L5A",
+          client_id: "g4Qar6R9X3pPUMxWTbhZH7V5JGFf",
           license_code: codigoExtraido, // Aquí se asigna el código extraído
         };
         console.log("Datos del segundo POST (token):", dataToken);
@@ -122,6 +123,15 @@ console.log("¿Es accepted?:", result?.licenseCreated?.status === "accepted");
           JSON.stringify({ result, token, panicAppData })
         );
         console.log("Datos Guardados en AsyncStorage (incluyendo panicAppData)");
+
+        // Registrar token de notificaciones después de guardar la licencia
+        try {
+          await registerForPushNotificationsAsync(codigoExtraido);
+        } catch (error) {
+          console.error("Error al registrar notificaciones:", error);
+          // No bloqueamos el flujo principal si falla el registro de notificaciones
+        }
+
         navigation.replace("Principal");
       }
     } catch (error) {

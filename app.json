@@ -53,6 +53,7 @@
     },
     "android": {
       "package": "com.pedrodarrigo.DesitAppV33",
+      "googleServicesFile": "./google-services.json",
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
         "backgroundColor": "#0066CC"

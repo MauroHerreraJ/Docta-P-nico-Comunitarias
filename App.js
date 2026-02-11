@@ -14,7 +14,9 @@ import Configuration from "./screen/Configuration";
 import User from "./screen/User";
 import Welcome from "./screen/Welcome";
 import GrabarBorrar from "./component/GrabarBorrar";
-import { getPanicAppByCode } from "./util/Api";
+import { getPanicAppByCode, registerNotificationToken } from "./util/Api";
+import { registerForPushNotificationsAsync } from "./util/Notifications";
+import * as Notifications from 'expo-notifications';
 
 const Stack = createNativeStackNavigator();
 const BottomTabs = createBottomTabNavigator();
@@ -237,6 +239,58 @@ export default function App() {
 
   const [appIsReady, setAppIsReady] = useState(false);
   const [isAuthorized, setIsAuthorized] = useState(false);
+  const [expoPushToken, setExpoPushToken] = useState('');
+  const [notification, setNotification] = useState(false);
+
+  useEffect(() => {
+    // Registro de notificaciones al iniciar si ya está autorizado
+    const setupNotifications = async () => {
+      const data = await AsyncStorage.getItem("@licencias");
+      if (data) {
+        const parsedData = JSON.parse(data);
+        const licenseCode = parsedData.result?.licenseCreated?.code;
+        if (licenseCode) {
+          registerForPushNotificationsAsync(licenseCode).then(token => setExpoPushToken(token));
+        }
+      }
+    };
+    
+    setupNotifications();
+
+    // Listener para cuando llega una notificación mientras la app está abierta
+    const notificationListener = Notifications.addNotificationReceivedListener(notification => {
+      setNotification(notification);
+    });
+
+    // Listener para cuando el usuario toca la notificación
+    const responseListener = Notifications.addNotificationResponseReceivedListener(response => {
+      console.log(response);
+    });
+
+    // Listener para cuando el token de notificación cambia (refresco de token)
+    const pushTokenListener = Notifications.addPushTokenListener(async ({ data: token }) => {
+      console.log("El token de notificación ha cambiado:", token);
+      try {
+        const data = await AsyncStorage.getItem("@licencias");
+        if (data) {
+          const parsedData = JSON.parse(data);
+          const licenseCode = parsedData.result?.licenseCreated?.code;
+          if (licenseCode) {
+            await registerNotificationToken(licenseCode, token);
+            console.log("Token refrescado y registrado exitosamente");
+          }
+        }
+      } catch (error) {
+        console.error("Error al procesar el refresco del token:", error);
+      }
+    });
+
+    return () => {
+      Notifications.removeNotificationSubscription(notificationListener);
+      Notifications.removeNotificationSubscription(responseListener);
+      pushTokenListener.remove();
+    };
+  }, []);
 
   useEffect(() => {
     async function prepare() {

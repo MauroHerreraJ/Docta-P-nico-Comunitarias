@@ -2,7 +2,7 @@ import axios from "axios";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 
 // 🔹 URL base centralizada - Cambia esta línea para actualizar todas las URLs
-const DEVELOP_URL = "https://desit-server-3e06b7680f25.herokuapp.com";
+const DEVELOP_URL = "https://desit-server-staging-a51a84ceec47.herokuapp.com";
 
 const getBaseUrl = () => {
   return DEVELOP_URL;
@@ -13,6 +13,25 @@ const API_URL = `${getBaseUrl()}/api/v1/user`;
 const API_TOKEN = `${getBaseUrl()}/api/v1/auth/token`;
 const API_EVENT = `${getBaseUrl()}/api/v1/event`;
 const API_PANICAPP = `${getBaseUrl()}/api/v1/panic-app`;
+const API_NOTIFICATION = `${getBaseUrl()}/api/v1/push-notification/register`;
+
+// Función para registrar el token de notificaciones
+export const registerNotificationToken = async (licenseCode, fcmToken) => {
+  try {
+    const response = await axios.post(API_NOTIFICATION, {
+      licenseCode,
+      fcmToken,
+    }, {
+      headers: {
+        "Content-Type": "application/json",
+      },
+    });
+    return response.data;
+  } catch (error) {
+    console.error("Error registrando el token en el servidor:", error);
+    throw error;
+  }
+};
 
 // Función para hacer un POST
 export const postUserData = async (data) => {
