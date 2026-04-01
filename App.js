@@ -3,7 +3,7 @@ import { NavigationContainer } from "@react-navigation/native";
 import { createNativeStackNavigator } from "@react-navigation/native-stack";
 import { createBottomTabNavigator } from "@react-navigation/bottom-tabs";
 import { Ionicons } from "@expo/vector-icons";
-import { Image } from "react-native";
+import { Image, Modal, View, Text, TouchableOpacity, StyleSheet } from "react-native";
 import { useFonts } from "expo-font";
 import * as SplashScreen from "expo-splash-screen";
 import { useEffect, useState } from "react";
@@ -20,6 +20,50 @@ import * as Notifications from 'expo-notifications';
 
 const Stack = createNativeStackNavigator();
 const BottomTabs = createBottomTabNavigator();
+
+function EventModal({ visible, onClose, eventData }) {
+  if (!eventData) return null;
+
+  // Función para resaltar el número de equipo en el cuerpo del mensaje
+  const renderBody = (text) => {
+    if (!text) return "La alarma ha sonado exitosamente en la calle.";
+    
+    // Buscamos el número de equipo (ej: 1005)
+    const teamMatch = text.match(/(\d{4})/);
+    if (teamMatch) {
+      const parts = text.split(teamMatch[0]);
+      return (
+        <Text style={styles.modalBody}>
+          {parts[0]}
+          <Text style={styles.boldText}>{teamMatch[0]}</Text>
+          {parts[1]}
+        </Text>
+      );
+    }
+    return <Text style={styles.modalBody}>{text}</Text>;
+  };
+
+  return (
+    <Modal
+      animationType="slide"
+      transparent={true}
+      visible={visible}
+      onRequestClose={onClose}
+    >
+      <View style={styles.modalOverlay}>
+        <View style={styles.modalContent}>
+          <Ionicons name="notifications-circle" size={80} color="#E74C3C" />
+          <Text style={styles.modalTitle}>{eventData.title || "!Alarma Activada!"}</Text>
+          {renderBody(eventData.body)}
+          
+          <TouchableOpacity style={styles.closeButton} onPress={onClose}>
+            <Text style={styles.closeButtonText}>ENTENDIDO</Text>
+          </TouchableOpacity>
+        </View>
+      </View>
+    </Modal>
+  );
+}
 
 // ⚙️ CONFIGURACIÓN DE ACTUALIZACIÓN
 // Cambia a 0 para forzar actualización en cada inicio (útil para desarrollo)
@@ -241,8 +285,42 @@ export default function App() {
   const [isAuthorized, setIsAuthorized] = useState(false);
   const [expoPushToken, setExpoPushToken] = useState('');
   const [notification, setNotification] = useState(false);
+  const [showEventModal, setShowEventModal] = useState(false);
+  const [eventData, setEventData] = useState(null);
 
   useEffect(() => {
+    // Función para normalizar y mostrar los datos de la notificación
+    const handleEventNotification = (content) => {
+      if (!content) return;
+      
+      console.log("Procesando contenido de notificación:", content);
+      
+      // Usamos el cuerpo (body) que envía el servidor directamente
+      const body = content.body || "La alarma de su zona se ha activado.";
+
+      setEventData({
+        title: "!Alarma Activada!",
+        body: body,
+        data: content.data || {}
+      });
+      setShowEventModal(true);
+    };
+
+    // Función para revisar si la app se abrió desde una notificación (cuando estaba cerrada)
+    const checkInitialNotification = async () => {
+      try {
+        const response = await Notifications.getLastNotificationResponseAsync();
+        if (response && response.notification) {
+          console.log("App abierta desde notificación (inicial):", response);
+          handleEventNotification(response.notification.request.content);
+        }
+      } catch (error) {
+        console.error("Error al obtener la notificación inicial:", error);
+      }
+    };
+
+    checkInitialNotification();
+
     // Registro de notificaciones al iniciar si ya está autorizado
     const setupNotifications = async () => {
       const data = await AsyncStorage.getItem("@licencias");
@@ -260,11 +338,15 @@ export default function App() {
     // Listener para cuando llega una notificación mientras la app está abierta
     const notificationListener = Notifications.addNotificationReceivedListener(notification => {
       setNotification(notification);
+      handleEventNotification(notification.request.content);
     });
 
     // Listener para cuando el usuario toca la notificación
     const responseListener = Notifications.addNotificationResponseReceivedListener(response => {
-      console.log(response);
+      console.log("Notificación tocada:", response);
+      if (response && response.notification) {
+        handleEventNotification(response.notification.request.content);
+      }
     });
 
     // Listener para cuando el token de notificación cambia (refresco de token)
@@ -384,6 +466,66 @@ export default function App() {
           <Stack.Screen name="Home" component={AllButtons} />
         </Stack.Navigator>
       </NavigationContainer>
+      <EventModal 
+        visible={showEventModal} 
+        onClose={() => setShowEventModal(false)} 
+        eventData={eventData} 
+      />
     </>
   );
 }
+
+const styles = StyleSheet.create({
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.7)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  modalContent: {
+    width: '85%',
+    backgroundColor: 'white',
+    borderRadius: 20,
+    padding: 25,
+    alignItems: 'center',
+    elevation: 10,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 5 },
+    shadowOpacity: 0.3,
+    shadowRadius: 5,
+  },
+  modalTitle: {
+    fontSize: 22,
+    fontFamily: 'open-sans-bold',
+    color: '#2C3E50',
+    marginTop: 15,
+    textAlign: 'center',
+  },
+  modalBody: {
+    fontSize: 16,
+    fontFamily: 'open-sans',
+    color: '#5D6D7E',
+    marginTop: 10,
+    textAlign: 'center',
+    lineHeight: 22,
+  },
+  closeButton: {
+    marginTop: 25,
+    backgroundColor: '#222266',
+    paddingVertical: 12,
+    paddingHorizontal: 30,
+    borderRadius: 10,
+    width: '100%',
+    alignItems: 'center',
+  },
+  closeButtonText: {
+    color: 'white',
+    fontSize: 16,
+    fontFamily: 'open-sans-bold',
+  },
+  boldText: {
+    fontFamily: 'open-sans-bold',
+    fontWeight: 'bold',
+    color: '#2C3E50',
+  },
+});
