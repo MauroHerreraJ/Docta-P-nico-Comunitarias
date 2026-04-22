@@ -212,7 +212,7 @@ const AllButtons = () => {
       </View>
     </ImageBackground>
   );
-};
+}; 
 
 export default AllButtons;
 

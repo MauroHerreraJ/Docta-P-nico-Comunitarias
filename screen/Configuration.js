@@ -109,7 +109,7 @@ console.log("¿Es accepted?:", result?.licenseCreated?.status === "accepted");
 
         const dataToken = {
           grant_type: "authorization_code".toLowerCase(),
-          client_id: "g4Qar6R9X3pPUMxWTbhZH7V5JGFf",
+          client_id: "7R9dxaPej6g1DPJ30vw9QpeG1L5A",
           license_code: codigoExtraido, // Aquí se asigna el código extraído
         };
         console.log("Datos del segundo POST (token):", dataToken);
