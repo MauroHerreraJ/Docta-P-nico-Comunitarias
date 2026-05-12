@@ -95,6 +95,24 @@ export const getPanicAppByCode = async (panicAppCode) => {
   }
 };
 
+// Función para eliminar la cuenta y licencia
+export const deleteLicenseAccount = async (licenseCode) => {
+  try {
+    const response = await axios.delete(`${API_URL}/delete-account`, {
+      headers: {
+        "Content-Type": "application/json",
+      },
+      data: {
+        licenseCode: licenseCode,
+      },
+    });
+    return response.data;
+  } catch (error) {
+    console.error("Error al eliminar la cuenta:", error);
+    throw error;
+  }
+};
+
 // Función para hacer un POST con el token
 export const savePost = async (newPost) => {
   try {

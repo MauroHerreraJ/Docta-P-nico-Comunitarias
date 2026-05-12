@@ -2,7 +2,7 @@
   "expo": {
     "name": "Docta Comunitarias",
     "slug": "villamaria",
-    "version": "1.0.1",
+    "version": "1.0.2",
     "orientation": "portrait",
     "icon": "./assets/adaptive-icon.png",
     "splash": {
@@ -50,6 +50,7 @@
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.pedrodarrigo.DesitAppV33",
+      "buildNumber": "2",
       "infoPlist": {
         "ITSAppUsesNonExemptEncryption": false
       }

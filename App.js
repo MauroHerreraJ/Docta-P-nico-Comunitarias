@@ -13,7 +13,6 @@ import AllButtons from "./screen/AllButtons";
 import Configuration from "./screen/Configuration";
 import User from "./screen/User";
 import Welcome from "./screen/Welcome";
-import GrabarBorrar from "./component/GrabarBorrar";
 import { getPanicAppByCode, registerNotificationToken } from "./util/Api";
 import { registerForPushNotificationsAsync } from "./util/Notifications";
 import * as Notifications from 'expo-notifications';
@@ -441,15 +440,6 @@ export default function App() {
             name="Principal"
             component={AuthorizedNavigation}
             options={{ headerShown: false }}
-          />
-          <Stack.Screen
-            name="GrabarBorrar"
-            component={GrabarBorrar}
-            options={{
-              title: "Borrar",
-              headerStyle: { backgroundColor: "#0d47a1" },
-              headerTintColor: "white",
-            }}
           />
           <Stack.Screen name="Welcome" component={Welcome} />
           <Stack.Screen
