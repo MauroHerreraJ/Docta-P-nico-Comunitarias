@@ -73,6 +73,10 @@ function Configuration() {
   };
 
   const saveData = async () => {
+    if (!isButtonEnabled) {
+      alert("Por favor, complete todos los campos de datos personales antes de continuar.");
+      return;
+    }
     try {
       setIsLoading(true);
       const data = {
@@ -382,9 +386,9 @@ console.log("¿Es accepted?:", result?.licenseCreated?.status === "accepted");
           {currentStep < 2 ? (
             <View style={styles.buttonContainer1}>
               <TouchableOpacity
-                style={styles.buttonUpdate}
+                style={[styles.buttonUpdate, !isContinueButtonEnabled && { opacity: 0.5 }]}
                 onPress={nextStep}
-                //disabled={!isContinueButtonEnabled}
+                disabled={!isContinueButtonEnabled}
               >
                 <Text style={styles.textImage}>SIGUIENTE</Text>
                 <MaterialIcons

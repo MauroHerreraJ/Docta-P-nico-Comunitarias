@@ -6,9 +6,9 @@ function SaveButton({ onPress, isEnabled }) {
     return (
         <View style={styles.buttonOuterContainer}>
             <Pressable
-                style={[styles.buttonInnerContainer]}
+                style={[styles.buttonInnerContainer, !isEnabled && { opacity: 0.5 }]}
                 onPress={onPress}
-               // disabled={!isEnabled}
+                disabled={!isEnabled}
                 android_ripple={{ color: "#222266" }}
             > 
                 <Text style={styles.buttonText}>Guardar</Text>
