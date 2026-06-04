@@ -15,6 +15,7 @@ import { postUserData, postToken, getPanicAppByCode, validateCredentials } from 
 import { registerForPushNotificationsAsync } from "../util/Notifications";
 import { MaterialIcons } from "@expo/vector-icons";
 import { Dimensions } from "react-native";
+import * as Sentry from "@sentry/react-native";
 import SaveButton from "../component/SaveButton";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 
@@ -113,7 +114,7 @@ console.log("¿Es accepted?:", result?.licenseCreated?.status === "accepted");
 
         const dataToken = {
           grant_type: "authorization_code".toLowerCase(),
-          client_id: "7R9dxaPej6g1DPJ30vw9QpeG1L5A",
+          client_id: "g4Qar6R9X3pPUMxWTbhZH7V5JGFf",
           license_code: codigoExtraido, // Aquí se asigna el código extraído
         };
         console.log("Datos del segundo POST (token):", dataToken);

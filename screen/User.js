@@ -69,6 +69,7 @@ function User({ navigation }) {
 
   const Borrar = async () => {
     await AsyncStorage.removeItem("@licencias");
+    setLicencia(null);
     console.log("borrado");
   };
 
@@ -200,9 +201,11 @@ function User({ navigation }) {
             />
           </View>
           
-          <Text style={styles.textImage}>
-            Producto desarrollado por Desit SA
-          </Text>
+          <TouchableOpacity onPress={Borrar}>
+            <Text style={styles.textImage}>
+              Producto desarrollado por Desit SA
+            </Text>
+          </TouchableOpacity>
           <Text style={styles.textImage}>Version 6.0.1 Docta Comunitarias</Text>
 
           <TouchableOpacity

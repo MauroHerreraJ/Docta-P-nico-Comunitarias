@@ -27,6 +27,13 @@
       "expo-asset",
       "expo-font",
       [
+        "@sentry/react-native/expo",
+        {
+          "organization": "docta-comunitarias",
+          "project": "docta-comunitarias"
+        }
+      ],
+      [
         "expo-splash-screen",
         {
           "backgroundColor": "#0066CC",

@@ -1,3 +1,10 @@
+import * as Sentry from "@sentry/react-native";
+
+Sentry.init({
+  dsn: "https://bcc447a33fe91fb113d98cd8e40510de@o4511473782161408.ingest.us.sentry.io/4511473784782848",
+  debug: false, // Si está en true, verás logs de Sentry en la terminal
+});
+
 import { StatusBar } from "expo-status-bar";
 import { NavigationContainer } from "@react-navigation/native";
 import { createNativeStackNavigator } from "@react-navigation/native-stack";
@@ -274,7 +281,7 @@ function NoAuthorizedNavigation() {
   );
 }
 
-export default function App() {
+function App() {
   const [fontsLoaded] = useFonts({
     "open-sans": require("./fonts/OpenSans-Regular.ttf"),
     "open-sans-bold": require("./fonts/OpenSans-Bold.ttf"),
@@ -344,7 +351,7 @@ export default function App() {
     const responseListener = Notifications.addNotificationResponseReceivedListener(response => {
       console.log("Notificación tocada:", response);
       if (response && response.notification) {
-        handleEventNotification(response.notification.request.content);
+        handleEventNotification(notification.request.content);
       }
     });
 
@@ -471,7 +478,7 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(0, 0, 0, 0.7)',
     justifyContent: 'center',
     alignItems: 'center',
-  },
+    },
   modalContent: {
     width: '85%',
     backgroundColor: 'white',
@@ -519,3 +526,5 @@ const styles = StyleSheet.create({
     color: '#2C3E50',
   },
 });
+
+export default Sentry.wrap(App);
