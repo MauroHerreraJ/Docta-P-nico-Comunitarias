@@ -11,6 +11,8 @@ function User({ navigation }) {
   const [licencia, setLicencia] = useState(null);
   const [isModalVisible, setIsModalVisible] = useState(false);
   const [isBorrarAccess, setIsBorrarAccess] = useState(false);
+  const [isAdminModalVisible, setIsAdminModalVisible] = useState(false);
+  const [adminPasswordInput, setAdminPasswordInput] = useState("");
   const [isDeleteModalVisible, setIsDeleteModalVisible] = useState(false);
   const [licenseInput, setLicenseInput] = useState("");
   const [isLicenseValid, setIsLicenseValid] = useState(null); // null, true, false
@@ -73,6 +75,33 @@ function User({ navigation }) {
     console.log("borrado");
   };
 
+  const handleAdminDelete = () => {
+    Alert.alert(
+      "Acceso Administrativo",
+      "¿Desea resetear la configuración local de la aplicación?",
+      [
+        { text: "Cancelar", style: "cancel" },
+        { 
+          text: "Continuar", 
+          onPress: () => {
+            setAdminPasswordInput("");
+            setIsAdminModalVisible(true);
+          } 
+        }
+      ]
+    );
+  };
+
+  const confirmAdminDelete = async () => {
+    if (adminPasswordInput === "253614") {
+      await Borrar();
+      setIsAdminModalVisible(false);
+      Alert.alert("Éxito", "La configuración local ha sido reseteada.");
+    } else {
+      Alert.alert("Error", "Clave incorrecta.");
+    }
+  };
+
   //Verifica si hay datos de licencia para mostrar
   if (!licencia) {
     return (
@@ -91,7 +120,7 @@ function User({ navigation }) {
               style={{ width: 59, height: 59 }}
             />
           </View>
-          <TouchableOpacity style={styles.buttonUpdate} onPress={Borrar}>
+          <TouchableOpacity style={styles.buttonUpdate} onPress={handleAdminDelete}>
             <Text style={styles.textImage}>
               Producto desarrollado por Desit SA
             </Text>
@@ -201,7 +230,7 @@ function User({ navigation }) {
             />
           </View>
           
-          <TouchableOpacity onPress={Borrar}>
+          <TouchableOpacity onPress={handleAdminDelete}>
             <Text style={styles.textImage}>
               Producto desarrollado por Desit SA
             </Text>
@@ -270,6 +299,49 @@ function User({ navigation }) {
                 disabled={!isLicenseValid}
               >
                 <Text style={styles.modalButtonText}>Eliminar</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
+      
+      {/* Modal de Acceso Administrativo */}
+      <Modal
+        visible={isAdminModalVisible}
+        transparent={true}
+        animationType="slide"
+        onRequestClose={() => setIsAdminModalVisible(false)}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.validationModalContent}>
+            <Text style={styles.modalTitle}>Acceso Administrador</Text>
+            <Text style={styles.modalSubtitle}>
+              Ingrese la clave de seguridad para resetear la configuración:
+            </Text>
+            
+            <TextInput
+              style={styles.licenseInput}
+              value={adminPasswordInput}
+              onChangeText={setAdminPasswordInput}
+              keyboardType="numeric"
+              secureTextEntry={true}
+              placeholder="******"
+              placeholderTextColor="#999"
+            />
+
+            <View style={styles.modalButtonContainer}>
+              <TouchableOpacity 
+                style={[styles.modalButton, styles.cancelButton]} 
+                onPress={() => setIsAdminModalVisible(false)}
+              >
+                <Text style={styles.modalButtonText}>Cancelar</Text>
+              </TouchableOpacity>
+              
+              <TouchableOpacity 
+                style={[styles.modalButton, styles.confirmButton]} 
+                onPress={confirmAdminDelete}
+              >
+                <Text style={styles.modalButtonText}>Confirmar</Text>
               </TouchableOpacity>
             </View>
           </View>

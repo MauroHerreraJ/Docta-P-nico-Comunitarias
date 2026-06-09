@@ -2,7 +2,7 @@ import axios from "axios";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 
 // 🔹 URL base centralizada - Cambia esta línea para actualizar todas las URLs
-const DEVELOP_URL = "https://desit-server-staging-a51a84ceec47.herokuapp.com";
+const DEVELOP_URL = "https://desit-server-3e06b7680f25.herokuapp.com";
 
 const getBaseUrl = () => {
   return DEVELOP_URL;

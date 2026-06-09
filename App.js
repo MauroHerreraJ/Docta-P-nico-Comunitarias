@@ -294,6 +294,7 @@ function App() {
   const [showEventModal, setShowEventModal] = useState(false);
   const [eventData, setEventData] = useState(null);
 
+  /* 🚫 NOTIFICACIONES ANULADAS TEMPORALMENTE
   useEffect(() => {
     // Función para normalizar y mostrar los datos de la notificación
     const handleEventNotification = (content) => {
@@ -379,6 +380,7 @@ function App() {
       pushTokenListener.remove();
     };
   }, []);
+  */
 
   useEffect(() => {
     async function prepare() {
