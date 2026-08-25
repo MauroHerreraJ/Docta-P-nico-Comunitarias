@@ -2,7 +2,7 @@ import axios from "axios";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 
 // 🔹 URL base centralizada - Cambia esta línea para actualizar todas las URLs
-const DEVELOP_URL = "https://desit-server-3e06b7680f25.herokuapp.com";
+const DEVELOP_URL = "https://desit-server-staging-a51a84ceec47.herokuapp.com";
 
 const getBaseUrl = () => {
   return DEVELOP_URL;
@@ -14,6 +14,46 @@ const API_TOKEN = `${getBaseUrl()}/api/v1/auth/token`;
 const API_EVENT = `${getBaseUrl()}/api/v1/event`;
 const API_PANICAPP = `${getBaseUrl()}/api/v1/panic-app`;
 const API_NOTIFICATION = `${getBaseUrl()}/api/v1/push-notification/register`;
+const API_AUTH = `${getBaseUrl()}/api/v1/auth`;
+
+// Función para activar el código maestro
+export const activateMasterCode = async (masterCode) => {
+  // 🔹 INICIO DE SIMULACIÓN LOCAL PARA DESARROLLO
+  const code = masterCode.trim().toUpperCase();
+
+  if (code === "COMU") {
+    console.log("🛠️ Simulación: Modo Docta Comunitarias activado");
+    return { 
+      success: true, 
+      product: "docta_panico", 
+      masterToken: "token-simulado-comunitarias" 
+    };
+  }
+
+  if (code === "VIGI") {
+    console.log("🛠️ Simulación: Modo Vigilantes activado");
+    return { 
+      success: true, 
+      product: "vigilantes", 
+      masterToken: "token-simulado-vigilantes" 
+    };
+  }
+  // 🔹 FIN DE SIMULACIÓN LOCAL
+
+  try {
+    const response = await axios.post(`${API_AUTH}/master-activate`, {
+      code: masterCode,
+    }, {
+      headers: {
+        "Content-Type": "application/json",
+      },
+    });
+    return response.data;
+  } catch (error) {
+    console.error("Error activando el código maestro:", error);
+    throw error;
+  }
+};
 
 // Función para registrar el token de notificaciones
 export const registerNotificationToken = async (licenseCode, fcmToken) => {

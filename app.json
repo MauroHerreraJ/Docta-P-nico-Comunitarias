@@ -46,13 +46,14 @@
         "expo-build-properties",
         {
           "android": {
-            "compileSdkVersion": 35,
-            "targetSdkVersion": 35,
+            "compileSdkVersion": 36,
+            "targetSdkVersion": 36,
             "minSdkVersion": 24,
-            "buildToolsVersion": "35.0.0"
+            "buildToolsVersion": "36.0.0"
           }
         }
-      ]
+      ],
+      "expo-audio"
     ],
     "ios": {
       "supportsTablet": true,
@@ -64,7 +65,7 @@
     },
     "android": {
       "package": "com.pedrodarrigo.DesitAppV33",
-      "versionCode": 2,
+      "versionCode": 3,
       "googleServicesFile": "./google-services.json",
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",

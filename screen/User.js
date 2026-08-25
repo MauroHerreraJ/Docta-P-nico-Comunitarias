@@ -1,5 +1,6 @@
 import { Text, View, StyleSheet, Image, TouchableOpacity, ScrollView, Alert, Modal, TextInput } from "react-native";
 import AsyncStorage from "@react-native-async-storage/async-storage";
+import * as Updates from 'expo-updates';
 import { useEffect, useState } from "react";
 import { useCallback } from "react";
 import { useFocusEffect } from "@react-navigation/native";
@@ -96,10 +97,51 @@ function User({ navigation }) {
     if (adminPasswordInput === "253614") {
       await Borrar();
       setIsAdminModalVisible(false);
-      Alert.alert("Éxito", "La configuración local ha sido reseteada.");
+      Alert.alert("Éxito", "La configuración local ha sido reseteada.", [
+        { 
+          text: "OK", 
+          onPress: () => {
+            setTimeout(async () => {
+              try {
+                await Updates.reloadAsync();
+              } catch (e) {
+                console.warn("reloadAsync falló");
+              }
+            }, 500);
+          } 
+        }
+      ]);
     } else {
       Alert.alert("Error", "Clave incorrecta.");
     }
+  };
+
+  const handleProductChange = async () => {
+    Alert.alert(
+      "Cambio de Producto",
+      "Esto eliminará TODA la configuración, incluyendo el código maestro. ¿Desea continuar?",
+      [
+        { text: "Cancelar", style: "cancel" },
+        { 
+          text: "Sí, resetear todo", 
+          style: "destructive",
+          onPress: async () => {
+            // Borrado selectivo para no afectar claves de sistema de Expo
+            await AsyncStorage.removeItem("@licencias");
+            await AsyncStorage.removeItem("@master_config");
+            await AsyncStorage.removeItem("@master_token");
+            
+            setTimeout(async () => {
+              try {
+                await Updates.reloadAsync();
+              } catch (e) {
+                console.warn("reloadAsync falló en desarrollo");
+              }
+            }, 500);
+          } 
+        }
+      ]
+    );
   };
 
   //Verifica si hay datos de licencia para mostrar
@@ -162,7 +204,20 @@ function User({ navigation }) {
       await AsyncStorage.removeItem("@licencias");
       setLicencia(null);
       setIsDeleteModalVisible(false);
-      Alert.alert("Éxito", "La licencia ha sido eliminada correctamente.");
+      Alert.alert("Éxito", "La licencia ha sido eliminada correctamente.", [
+        { 
+          text: "OK", 
+          onPress: () => {
+            setTimeout(async () => {
+              try {
+                await Updates.reloadAsync();
+              } catch (e) {
+                console.warn("reloadAsync falló");
+              }
+            }, 500);
+          } 
+        }
+      ]);
     } catch (error) {
       Alert.alert("Error", "No se pudo eliminar la licencia del servidor. Inténtalo de nuevo.");
     }
@@ -344,6 +399,13 @@ function User({ navigation }) {
                 <Text style={styles.modalButtonText}>Confirmar</Text>
               </TouchableOpacity>
             </View>
+
+            <TouchableOpacity 
+              style={[styles.changeProductButton, { marginTop: 20 }]} 
+              onPress={handleProductChange}
+            >
+              <Text style={styles.changeProductButtonText}>Cambiar de Producto (Master Reset)</Text>
+            </TouchableOpacity>
           </View>
         </View>
       </Modal>
@@ -521,5 +583,20 @@ const styles = StyleSheet.create({
     color: 'white',
     fontSize: 16,
     fontFamily: 'open-sans-bold',
+  },
+  changeProductButton: {
+    backgroundColor: '#222266',
+    width: '100%',
+    height: 45,
+    borderRadius: 8,
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingHorizontal: 10,
+  },
+  changeProductButtonText: {
+    color: 'white',
+    fontSize: 14,
+    fontFamily: 'open-sans-bold',
+    textAlign: 'center',
   },
 });

@@ -7,6 +7,8 @@ import {
   Pressable,
   KeyboardAvoidingView,
   TouchableOpacity,
+  Modal,
+  ScrollView,
 } from "react-native";
 import { useNavigation } from "@react-navigation/native";
 import { StyleSheet } from "react-native";
@@ -19,7 +21,66 @@ import * as Sentry from "@sentry/react-native";
 import SaveButton from "../component/SaveButton";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 
-function Configuration() {
+const TERMS_AND_CONDITIONS = {
+  title: "Términos y condiciones de uso",
+  intro: "Es necesario, para la configuración y uso de esta aplicación, que lea y acepte los términos y condiciones que a continuación se detallan:",
+  sections: [
+    {
+      title: "Pulsador de Pánico",
+      content: "Es una aplicación destinada al envío de mensajes de emergencia hacia la central de monitoreo instalada en su barrio, urbanización, ciudad, etc., haciendo uso de los recursos de seguridad con los que cuenta su entorno de aplicación para la atención y/o resolución del evento."
+    },
+    {
+      title: "Condiciones previas para el correcto funcionamiento",
+      content: "Para hacer uso de la APP de emergencia, usted deberá contar con el permiso del organismo que previamente haya instalado el Sistema de Monitoreo de Desit SA. Esta aplicación funciona en conjunto con dicho sistema."
+    },
+    {
+      title: "Configuración inicial",
+      content: "Para comenzar a utilizar la aplicación usted deberá completar tres campos, el primero con el código de licencia, el segundo con el número de equipo y el tercero con el número de cuenta, todos provistos por el organismo de control de implementación de uso de esta APP. Al ingresar los datos correctos, la aplicación puede solicitar permisos que usted deberá aceptar, de lo contrario la aplicación quedará sin funcionar. Para mayor detalle consultar el instructivo de instalación de la APP que le envió el organismo de control de uso y aplicación de este sistema. Una vez hecho esto la aplicación quedará lista para su uso. Nota: Los datos con los que configuró el envío de eventos hacia la central son ÚNICOS por cada APP individual."
+    },
+    {
+      title: "Uso y cuidados",
+      content: "Para utilizar la aplicación ante una situación de emergencia usted simplemente deberá abrirla y mantener presionado durante 1 (un) segundo el botón de aviso del evento que quiera comunicar. La aplicación no tiene límite de eventos que pueden ser enviados. Al enviar un evento a la central de monitoreo se dará aviso que desde su smartphone existe una emergencia de acuerdo a la naturaleza del botón que pulsó dentro de los disponibles en su APP. El pulsador NO ENVÍA información sobre su posición mediante el uso de GPS. Contamos con su entendimiento y compromiso de utilizar solo en casos de emergencia los botones de emergencia, como así también instruir de forma correcta al resto de los miembros de su familia en especial a los más jóvenes. Nota: Para poder enviar eventos de forma correcta usted deberá contar con disponibilidad de servicio de internet y/o paquete de datos, ya que cada evento se envía mediante un mensaje vía Internet."
+    },
+    {
+      title: "Formas de envío de alerta",
+      content: "La aplicación cuenta con la capacidad de enviar la alerta vía Internet."
+    },
+    {
+      title: "Costos",
+      content: "El envío de eventos por IP (internet) corre por parte del servicio de telefonía y/o paquete de datos que usted tenga contratado por lo que cada evento enviado tendrá el costo de la tarifa vigente de su proveedor."
+    },
+    {
+      title: "Responsabilidades",
+      content: "Desit SA no se hace responsable por fallas en envíos de eventos ocasionadas por causas ajenas al propio funcionamiento de la APP."
+    },
+    {
+      title: "Política de privacidad",
+      content: "La presente Política de Privacidad establece los términos en que Desit SA usa y protege la información que es proporcionada por sus usuarios al momento de utilizar Docta Pánico. Desit SA está comprometido con la seguridad de los datos de sus usuarios y aseguramos que los mismos serán empleados de acuerdo con los términos de este documento. Sin embargo, esta Política de Privacidad puede cambiar sin previo aviso por lo que le recomendamos revisar estos términos después de cada actualización para asegurarse que está de acuerdo con estos potenciales cambios."
+    },
+    {
+      title: "Información recogida",
+      content: "Desit SA no recoge información guardada en la aplicación ni tampoco recoge información sobre el uso de la misma, toda la información introducida por parte del usuario queda almacenada de manera local en el dispositivo y no es enviada ni a Desit SA ni a un tercero por parte de Desit SA."
+    },
+    {
+      title: "Uso de la información recogida",
+      content: "Desit SA no recoge información de la aplicación ni de su uso, por lo que no procesamos ningún tipo de información personal."
+    },
+    {
+      title: "Divulgación a Terceros",
+      content: "Desit Pánico no comparte información sobre la aplicación con terceros ni tampoco hacemos uso de enlaces hacia terceros dentro de la aplicación."
+    },
+    {
+      title: "Control de su información personal",
+      content: "Toda la información que se ingrese a la aplicación queda almacenada de manera local, como así también en el servidor de Desit con el fin de generar y resguardar la licencia de uso de la app. Los números de teléfonos o textos ingresados sólo serán resguardados a tal fin y bajo ningún concepto serán remitidos a ningún otro destino o empresa mediante Desit SA. El usuario acepta estas condiciones al realizar la configuración de la aplicación en su smartphone."
+    },
+    {
+      title: "Reserva de derechos",
+      content: "Desit SA se reserva el derecho de cambiar los términos de la presente Política de Privacidad en cualquier momento."
+    }
+  ]
+};
+
+function Configuration({ onAuthorized }) {
   const { width, height } = Dimensions.get("window");
   const navigation = useNavigation();
   const [licencias, setLicencias] = useState({
@@ -35,6 +96,8 @@ function Configuration() {
   const [currentStep, setCurrentStep] = useState(1);
   const [isButtonEnabled, setIsButtonEnabled] = useState(false);
   const [isContinueButtonEnabled, setContinueButtonEnabled] = useState(false);
+  const [isTermsAccepted, setIsTermsAccepted] = useState(false);
+  const [isTermsModalVisible, setIsTermsModalVisible] = useState(false);
   const [panicAppData, setPanicAppData] = useState(null);
   const screenWidth = Dimensions.get("window").width;
   const screenHeight = Dimensions.get("window").height;
@@ -46,13 +109,14 @@ function Configuration() {
     if (
       licencias.panicAppCode &&
       licencias.targetDeviceId &&
-      licencias.numberId
+      licencias.numberId &&
+      isTermsAccepted
     ) {
       setContinueButtonEnabled(true);
     } else {
       setContinueButtonEnabled(false);
     }
-  }, [licencias]); // Dependencias
+  }, [licencias, isTermsAccepted]); // Dependencias
 
   useEffect(() => {
     if (
@@ -114,7 +178,7 @@ console.log("¿Es accepted?:", result?.licenseCreated?.status === "accepted");
 
         const dataToken = {
           grant_type: "authorization_code".toLowerCase(),
-          client_id: "7R9dxaPej6g1DPJ30vw9QpeG1L5A",
+          client_id: "g4Qar6R9X3pPUMxWTbhZH7V5JGFf",
           license_code: codigoExtraido, // Aquí se asigna el código extraído
         };
         console.log("Datos del segundo POST (token):", dataToken);
@@ -138,7 +202,11 @@ console.log("¿Es accepted?:", result?.licenseCreated?.status === "accepted");
         }
         */
 
-        navigation.replace("Principal");
+        if (onAuthorized) {
+          onAuthorized();
+        } else {
+          navigation.replace("Principal");
+        }
       }
     } catch (error) {
       console.error("Error al hacer el POST:", error);
@@ -267,6 +335,29 @@ console.log("¿Es accepted?:", result?.licenseCreated?.status === "accepted");
                     color="#000"
                     style={styles.icon}
                   />
+                </View>
+              </View>
+
+              {/* Checkbox de Términos y Condiciones */}
+              <View style={styles.termsContainer}>
+                <TouchableOpacity
+                  style={[styles.checkbox, isTermsAccepted && styles.checkboxChecked]}
+                  onPress={() => setIsTermsAccepted(!isTermsAccepted)}
+                >
+                  {isTermsAccepted && (
+                    <MaterialIcons name="check" size={18} color="white" />
+                  )}
+                </TouchableOpacity>
+                <View style={styles.termsTextContainer}>
+                  <Text style={styles.termsText}>
+                    Acepto los{" "}
+                    <Text
+                      style={styles.termsLink}
+                      onPress={() => setIsTermsModalVisible(true)}
+                    >
+                      Términos y condiciones de uso
+                    </Text>
+                  </Text>
                 </View>
               </View>
             </View>
@@ -408,6 +499,42 @@ console.log("¿Es accepted?:", result?.licenseCreated?.status === "accepted");
           )}
         </>
       )}
+
+      {/* Modal de Términos y Condiciones */}
+      <Modal
+        animationType="slide"
+        transparent={true}
+        visible={isTermsModalVisible}
+        onRequestClose={() => setIsTermsModalVisible(false)}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalContent}>
+            <View style={styles.modalHeader}>
+              <Text style={styles.modalTitle}>{TERMS_AND_CONDITIONS.title}</Text>
+              <TouchableOpacity onPress={() => setIsTermsModalVisible(false)}>
+                <MaterialIcons name="close" size={28} color="#222266" />
+              </TouchableOpacity>
+            </View>
+
+            <ScrollView style={styles.modalScrollView}>
+              <Text style={styles.modalIntro}>{TERMS_AND_CONDITIONS.intro}</Text>
+              {TERMS_AND_CONDITIONS.sections.map((section, index) => (
+                <View key={index} style={styles.modalSection}>
+                  <Text style={styles.modalSectionTitle}>{section.title}</Text>
+                  <Text style={styles.modalSectionContent}>{section.content}</Text>
+                </View>
+              ))}
+            </ScrollView>
+
+            <TouchableOpacity
+              style={styles.modalCloseButton}
+              onPress={() => setIsTermsModalVisible(false)}
+            >
+              <Text style={styles.modalCloseButtonText}>ENTENDIDO</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
     </>
   );
 }
@@ -475,7 +602,6 @@ const styles = StyleSheet.create({
   textButton: {
     color: "#222266",
     fontSize: 15,
-
     textAlign: "center",
   },
   iconContainer: {
@@ -494,19 +620,120 @@ const styles = StyleSheet.create({
     fontFamily: "open-sans-bold",
   },
   buttonContainer: {
-    flexDirection: "row", // Alinea los botones horizontalmente
-    justifyContent: "space-between", // Espacio entre los botones
+    flexDirection: "row",
+    justifyContent: "space-between",
     marginTop: 20,
-    paddingHorizontal: 20, // Ajusta el padding horizontal
+    paddingHorizontal: 20,
   },
   buttonUpdate: {
-    flexDirection: "row", // Esto asegura que los elementos estén en una fila
-    alignItems: "center", // Centra el texto e icono verticalmente
-    justifyContent: "center", // Centra todo el contenido horizontalmente
-    padding: 10, // Puedes ajustar el padding según sea necesario
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    padding: 10,
   },
   textImage: {
     fontSize: 16,
     color: "#222266",
+  },
+  // Nuevos estilos para Términos y Condiciones
+  termsContainer: {
+    flexDirection: "row",
+    alignItems: "center",
+    marginTop: 10,
+    paddingHorizontal: 5,
+  },
+  checkbox: {
+    width: 24,
+    height: 24,
+    borderWidth: 2,
+    borderColor: "#222266",
+    borderRadius: 4,
+    justifyContent: "center",
+    alignItems: "center",
+    marginRight: 10,
+  },
+  checkboxChecked: {
+    backgroundColor: "#222266",
+  },
+  termsTextContainer: {
+    flex: 1,
+  },
+  termsText: {
+    fontSize: 14,
+    fontFamily: "open-sans",
+    color: "#333",
+  },
+  termsLink: {
+    color: "#0F76C4",
+    fontFamily: "open-sans-bold",
+    textDecorationLine: "underline",
+  },
+  // Estilos para el Modal de Términos
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: "rgba(0, 0, 0, 0.6)",
+    justifyContent: "center",
+    alignItems: "center",
+  },
+  modalContent: {
+    width: "90%",
+    height: "80%",
+    backgroundColor: "white",
+    borderRadius: 15,
+    padding: 20,
+    elevation: 10,
+  },
+  modalHeader: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    marginBottom: 15,
+    borderBottomWidth: 1,
+    borderBottomColor: "#EEE",
+    paddingBottom: 10,
+  },
+  modalTitle: {
+    fontSize: 18,
+    fontFamily: "open-sans-bold",
+    color: "#222266",
+    flex: 1,
+  },
+  modalScrollView: {
+    flex: 1,
+  },
+  modalIntro: {
+    fontSize: 14,
+    fontFamily: "open-sans-bold",
+    color: "#444",
+    marginBottom: 15,
+    lineHeight: 20,
+  },
+  modalSection: {
+    marginBottom: 20,
+  },
+  modalSectionTitle: {
+    fontSize: 16,
+    fontFamily: "open-sans-bold",
+    color: "#222266",
+    marginBottom: 5,
+  },
+  modalSectionContent: {
+    fontSize: 14,
+    fontFamily: "open-sans",
+    color: "#666",
+    lineHeight: 20,
+    textAlign: "justify",
+  },
+  modalCloseButton: {
+    backgroundColor: "#222266",
+    paddingVertical: 12,
+    borderRadius: 8,
+    alignItems: "center",
+    marginTop: 15,
+  },
+  modalCloseButtonText: {
+    color: "white",
+    fontSize: 16,
+    fontFamily: "open-sans-bold",
   },
 });

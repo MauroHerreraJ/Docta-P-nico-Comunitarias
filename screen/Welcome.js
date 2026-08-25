@@ -11,14 +11,40 @@ import {
 import { useState } from "react";
 import { SafeAreaView, SafeAreaProvider } from "react-native-safe-area-context";
 
-function Welcome({ navigation }) {
+import AsyncStorage from "@react-native-async-storage/async-storage";
+
+function Welcome({ navigation, activeProduct, onAuthorized }) {
   const [isChecked, setIsChecked] = useState(false); // Estado del checkbox
   
   // Debug: Verificar si la imagen se carga
-  console.log("Welcome: Logo local cargado");
+  console.log("Welcome: Logo local cargado, producto:", activeProduct);
   
-  function pressHandler() {
-    navigation.navigate("Configuration");
+  async function pressHandler() {
+    if (activeProduct === "docta_panico") {
+      navigation.navigate("Configuration");
+    } else {
+      // Para otros productos, simulamos la creación de una licencia básica independiente
+      try {
+        const dummyLicense = {
+          result: {
+            licenseCreated: {
+              accountNumber: "MASTER",
+              panicAppCode: activeProduct ? activeProduct.toUpperCase() : "PRODUCT",
+              code: "ACTIVADO-" + (activeProduct || "NUEVO"),
+              targetDeviceId: "MASTER-DEVICE",
+              status: "active"
+            }
+          }
+        };
+        // 🔹 Usamos una clave diferente para cada producto nuevo
+        const storageKey = `@licencias_${activeProduct}`;
+        await AsyncStorage.setItem(storageKey, JSON.stringify(dummyLicense));
+        
+        if (onAuthorized) onAuthorized(); 
+      } catch (error) {
+        console.error("Error al autorizar producto independiente:", error);
+      }
+    }
   }
   function toggleCheckbox() {
     setIsChecked((prevState) => !prevState); // Alterna entre seleccionado y no seleccionado
