@@ -1,25 +1,40 @@
+import * as Sentry from "@sentry/react-native";
+
+Sentry.init({
+  dsn: "https://bcc447a33fe91fb113d98cd8e40510de@o4511473782161408.ingest.us.sentry.io/4511473784782848",
+  debug: false, // Si está en true, verás logs de Sentry en la terminal
+});
+
 import { StatusBar } from "expo-status-bar";
 import { NavigationContainer } from "@react-navigation/native";
 import { createNativeStackNavigator } from "@react-navigation/native-stack";
 import { createBottomTabNavigator } from "@react-navigation/bottom-tabs";
 import { Ionicons } from "@expo/vector-icons";
-import { Image, Modal, View, Text, TouchableOpacity, StyleSheet } from "react-native";
+import { Image, Modal, View, Text, TouchableOpacity, StyleSheet, Alert } from "react-native";
 import { useFonts } from "expo-font";
 import * as SplashScreen from "expo-splash-screen";
-import { useEffect, useState } from "react";
+import { useEffect, useState, useRef } from "react";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { Asset } from "expo-asset";
 import AllButtons from "./screen/AllButtons";
 import Configuration from "./screen/Configuration";
 import User from "./screen/User";
 import Welcome from "./screen/Welcome";
-import GrabarBorrar from "./component/GrabarBorrar";
+import MasterCode from "./screen/MasterCode";
+import Multimedia from "./screen/Multimedia";
 import { getPanicAppByCode, registerNotificationToken } from "./util/Api";
 import { registerForPushNotificationsAsync } from "./util/Notifications";
 import * as Notifications from 'expo-notifications';
+import * as Updates from 'expo-updates';
 
 const Stack = createNativeStackNavigator();
 const BottomTabs = createBottomTabNavigator();
+
+// 🔹 Función para obtener la clave de almacenamiento según el producto
+const getStorageKey = (product) => {
+  if (!product || product === "docta_panico") return "@licencias";
+  return `@licencias_${product}`;
+};
 
 function EventModal({ visible, onClose, eventData }) {
   if (!eventData) return null;
@@ -144,6 +159,23 @@ function AuthorizedNavigation() {
   const [logoUrl, setLogoUrl] = useState("https://i.imgur.com/aIYhRsN.png");
   const [headerBgColor, setHeaderBgColor] = useState("white");
   const [headerTxtColor, setHeaderTxtColor] = useState("Black");
+  const [isMultimediaEnabled, setIsMultimediaEnabled] = useState(false);
+  const timerRef = useRef(null);
+
+  const activateMultimedia = () => {
+    setIsMultimediaEnabled(true);
+    if (timerRef.current) clearTimeout(timerRef.current);
+    
+    // Auto-cierre en 5 minutos
+    timerRef.current = setTimeout(() => {
+      setIsMultimediaEnabled(false);
+    }, 300000);
+  };
+
+  const deactivateMultimedia = () => {
+    if (timerRef.current) clearTimeout(timerRef.current);
+    setIsMultimediaEnabled(false);
+  };
 
   useEffect(() => {
     const loadPanicAppData = async () => {
@@ -190,7 +222,6 @@ function AuthorizedNavigation() {
     >
       <BottomTabs.Screen
         name="Desit"
-        component={AllButtons}
         options={{
           title: "",
           tabBarLabel: "Home",
@@ -211,7 +242,38 @@ function AuthorizedNavigation() {
             justifyContent: 'center',
           },
         }}
-      />
+      >
+        {(props) => <AllButtons {...props} onPanicSuccess={activateMultimedia} />}
+      </BottomTabs.Screen>
+
+      {isMultimediaEnabled && (
+        <BottomTabs.Screen
+          name="Multimedia"
+          options={{
+            title: "",
+            tabBarLabel: "Adjuntar",
+            tabBarIcon: ({ color, size }) => (
+              <Ionicons name="camera" size={size} color={color} />
+            ),
+            headerTitle: () => (
+              <Image
+                source={{ uri: logoUrl }}
+                style={{ width: 230, height: 80, marginTop: -20 }}
+                resizeMode="contain"
+              />
+            ),
+            headerTitleContainerStyle: {
+              left: 0,
+              right: 0,
+              alignItems: 'center',
+              justifyContent: 'center',
+            },
+          }}
+        >
+          {(props) => <Multimedia {...props} onFinalize={deactivateMultimedia} />}
+        </BottomTabs.Screen>
+      )}
+
       <BottomTabs.Screen
         name="User"
         component={User}
@@ -240,42 +302,231 @@ function AuthorizedNavigation() {
   );
 }
 
-function NoAuthorizedNavigation() {
+function NoAuthorizedNavigation({ activeProduct, onAuthorized }) {
+  const initialRoute = activeProduct === "docta_panico" ? "Configuration" : "Welcome";
+  
   return (
-    <BottomTabs.Navigator
+    <Stack.Navigator
+      initialRouteName={initialRoute}
       screenOptions={{
         headerStyle: { backgroundColor: "#0F76C4", height: 100 },
         headerTintColor: "black",
+        headerTitleAlign: 'center',
+      }}
+    >
+      {/* Welcome sigue existiendo para otros productos o por si se necesita */}
+      <Stack.Screen
+        name="Welcome"
+        options={{
+          headerShown: false,
+        }}
+      >
+        {(props) => (
+          <Welcome 
+            {...props} 
+            activeProduct={activeProduct} 
+            onAuthorized={onAuthorized} 
+          />
+        )}
+      </Stack.Screen>
+
+      <Stack.Screen
+        name="Configuration"
+      >
+        {(props) => (
+          <Configuration 
+            {...props} 
+            onAuthorized={onAuthorized} 
+          />
+        )}
+      </Stack.Screen>
+    </Stack.Navigator>
+  );
+}
+
+function ProductSpecificNavigation({ onReset }) {
+  const [productName, setProductName] = useState("Vigilantes");
+  const [logoUrl, setLogoUrl] = useState("https://i.imgur.com/aIYhRsN.png");
+  const [isMultimediaEnabled, setIsMultimediaEnabled] = useState(false);
+  const timerRef = useRef(null);
+
+  const activateMultimedia = () => {
+    setIsMultimediaEnabled(true);
+    if (timerRef.current) clearTimeout(timerRef.current);
+    timerRef.current = setTimeout(() => {
+      setIsMultimediaEnabled(false);
+    }, 300000); // 5 min
+  };
+
+  const deactivateMultimedia = () => {
+    if (timerRef.current) clearTimeout(timerRef.current);
+    setIsMultimediaEnabled(false);
+  };
+
+  useEffect(() => {
+    const loadData = async () => {
+      try {
+        const masterData = await AsyncStorage.getItem("@master_config");
+        if (masterData) {
+          const parsed = JSON.parse(masterData);
+          if (parsed.product === "vigilantes") setProductName("Vigilantes");
+          else if (parsed.product === "ciudadanos") setProductName("Ciudadanos");
+          else setProductName(parsed.product.charAt(0).toUpperCase() + parsed.product.slice(1));
+        }
+      } catch (error) {
+        console.error("Error loading master config in ProductSpecificNavigation:", error);
+      }
+    };
+    loadData();
+  }, []);
+
+  const resetToWelcome = async () => {
+    Alert.alert("Reiniciar", "¿Desea volver a la configuración inicial del producto?", [
+      { text: "Cancelar", style: "cancel" },
+      { 
+        text: "Sí, reiniciar", 
+        onPress: async () => {
+          onReset(false); 
+          
+          const specificKey = getStorageKey(productName.toLowerCase());
+          await AsyncStorage.removeItem(specificKey);
+          
+          try {
+            // await Updates.reloadAsync();
+          } catch (e) {
+            console.log("Reload abortado");
+          }
+        } 
+      }
+    ]);
+  };
+
+  const resetToMaster = async () => {
+    Alert.alert("Master Reset", "Esto borrará TODO y permitirá ingresar un nuevo código maestro.", [
+      { text: "Cancelar", style: "cancel" },
+      { 
+        text: "Sí, borrar todo", 
+        style: "destructive",
+        onPress: async () => {
+          onReset(true); 
+          
+          const specificKey = getStorageKey(productName.toLowerCase());
+          await AsyncStorage.removeItem(specificKey);
+          await AsyncStorage.removeItem("@master_config");
+          await AsyncStorage.removeItem("@master_token");
+          
+          try {
+            // await Updates.reloadAsync();
+          } catch (e) {
+            console.log("Reload abortado");
+          }
+        } 
+      }
+    ]);
+  };
+
+  return (
+    <BottomTabs.Navigator
+      screenOptions={{
+        headerStyle: { backgroundColor: 'white', height: 100 },
+        headerTintColor: '#222266',
+        headerTitleAlign: 'center',
       }}
     >
       <BottomTabs.Screen
-        name="Welcome"
-        component={Welcome}
+        name="ProductHome"
         options={{
-          headerShown: false,
-          tabBarStyle: { display: "none" },
+          title: "",
+          tabBarLabel: "Home",
           tabBarIcon: ({ color, size }) => (
             <Ionicons name="home-outline" size={size} color={color} />
           ),
+          headerTitle: productName,
+          headerTitleStyle: { fontSize: 24, fontWeight: 'bold' }
         }}
-      />
+      >
+        {() => (
+          <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: '#F5F7FA' }}>
+            <Ionicons name="shield-checkmark-outline" size={100} color="#222266" />
+            <Text style={{ fontSize: 32, fontFamily: 'open-sans-bold', color: '#222266', marginTop: 20 }}>
+              {productName}
+            </Text>
+            <Text style={{ fontSize: 16, fontFamily: 'open-sans', color: '#666', marginTop: 10 }}>
+              Panel de Control Activo
+            </Text>
+            <TouchableOpacity 
+              onPress={activateMultimedia}
+              style={{ marginTop: 20, backgroundColor: '#E74C3C', padding: 10, borderRadius: 10 }}
+            >
+              <Text style={{ color: 'white' }}>SIMULAR PÁNICO (Activar Multimedia)</Text>
+            </TouchableOpacity>
+          </View>
+        )}
+      </BottomTabs.Screen>
+
+      {isMultimediaEnabled && (
+        <BottomTabs.Screen
+          name="Multimedia"
+          options={{
+            title: "",
+            tabBarLabel: "Adjuntar",
+            tabBarIcon: ({ color, size }) => (
+              <Ionicons name="camera" size={size} color={color} />
+            ),
+            headerTitle: productName,
+            headerTitleStyle: { fontSize: 24, fontWeight: 'bold' }
+          }}
+        >
+          {(props) => <Multimedia {...props} onFinalize={deactivateMultimedia} />}
+        </BottomTabs.Screen>
+      )}
 
       <BottomTabs.Screen
-        name="Configuration"
-        component={Configuration}
+        name="User"
         options={{
-          tabBarStyle: { display: "none" },
-          title: "Configuración",
+          title: "",
+          tabBarLabel: "Sistema",
           tabBarIcon: ({ color, size }) => (
             <Ionicons name="settings-outline" size={size} color={color} />
           ),
+          headerTitle: "Sistema",
         }}
-      />
+      >
+        {() => (
+          <View style={{ flex: 1, padding: 30, justifyContent: 'center', backgroundColor: '#F5F7FA' }}>
+            <Text style={{ textAlign: 'center', marginBottom: 40, fontSize: 18, color: '#666', fontFamily: 'open-sans' }}>
+              Gestión de {productName}
+            </Text>
+
+            <TouchableOpacity 
+              onPress={resetToWelcome}
+              style={{ backgroundColor: '#EB7F27', padding: 18, borderRadius: 12, marginBottom: 20, elevation: 3 }}
+            >
+              <Text style={{ color: 'white', textAlign: 'center', fontWeight: 'bold', fontSize: 16 }}>
+                REINICIAR CONFIGURACIÓN (Ir a Welcome)
+              </Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity 
+              onPress={resetToMaster}
+              style={{ backgroundColor: '#222266', padding: 18, borderRadius: 12, elevation: 3 }}
+            >
+              <Text style={{ color: 'white', textAlign: 'center', fontWeight: 'bold', fontSize: 16 }}>
+                CAMBIAR DE PRODUCTO (Ir a Master Code)
+              </Text>
+            </TouchableOpacity>
+            
+            <Text style={{ marginTop: 50, textAlign: 'center', color: '#AAA', fontSize: 12 }}>
+              Desit SA - Desarrollo Independiente
+            </Text>
+          </View>
+        )}
+      </BottomTabs.Screen>
     </BottomTabs.Navigator>
   );
 }
 
-export default function App() {
+function App() {
   const [fontsLoaded] = useFonts({
     "open-sans": require("./fonts/OpenSans-Regular.ttf"),
     "open-sans-bold": require("./fonts/OpenSans-Bold.ttf"),
@@ -283,11 +534,14 @@ export default function App() {
 
   const [appIsReady, setAppIsReady] = useState(false);
   const [isAuthorized, setIsAuthorized] = useState(false);
+  const [hasMasterCode, setHasMasterCode] = useState(false);
+  const [activeProduct, setActiveProduct] = useState(null);
   const [expoPushToken, setExpoPushToken] = useState('');
   const [notification, setNotification] = useState(false);
   const [showEventModal, setShowEventModal] = useState(false);
   const [eventData, setEventData] = useState(null);
 
+  /* 🚫 NOTIFICACIONES ANULADAS TEMPORALMENTE
   useEffect(() => {
     // Función para normalizar y mostrar los datos de la notificación
     const handleEventNotification = (content) => {
@@ -345,7 +599,7 @@ export default function App() {
     const responseListener = Notifications.addNotificationResponseReceivedListener(response => {
       console.log("Notificación tocada:", response);
       if (response && response.notification) {
-        handleEventNotification(response.notification.request.content);
+        handleEventNotification(notification.request.content);
       }
     });
 
@@ -373,6 +627,7 @@ export default function App() {
       pushTokenListener.remove();
     };
   }, []);
+  */
 
   useEffect(() => {
     async function prepare() {
@@ -399,12 +654,37 @@ export default function App() {
         
         // Preload fonts or any other task
         await new Promise((resolve) => setTimeout(resolve, 2000));
-        const data = await AsyncStorage.getItem("@licencias");
-        if (data !== null) {
-          setIsAuthorized(true); // Usuario ya configurado
+        
+        const masterData = await AsyncStorage.getItem("@master_config");
+        let activeProd = null;
+
+        if (masterData !== null) {
+          const parsedMaster = JSON.parse(masterData);
+          activeProd = parsedMaster.product;
+          setHasMasterCode(true);
+          setActiveProduct(activeProd);
           
-          // Migración automática para usuarios existentes
-          await migrateExistingUsers(data);
+          // Verificamos la licencia específica de este producto
+          const specificKey = getStorageKey(activeProd);
+          const licenseData = await AsyncStorage.getItem(specificKey);
+
+          if (licenseData !== null) {
+            setIsAuthorized(true);
+            if (activeProd === "docta_panico") {
+              await migrateExistingUsers(licenseData);
+            }
+          }
+        } else {
+          // CASO LEGACY: No hay master_config, buscamos la licencia original
+          const legacyData = await AsyncStorage.getItem("@licencias");
+          if (legacyData !== null) {
+            setIsAuthorized(true);
+            setActiveProduct("docta_panico");
+            await migrateExistingUsers(legacyData);
+          } else {
+            setHasMasterCode(false);
+            setActiveProduct(null);
+          }
         }
       } catch (e) {
         console.warn("❌ Error durante la preparación:", e);
@@ -429,29 +709,70 @@ export default function App() {
     <>
       <StatusBar style="dark" />
       <NavigationContainer>
-        <Stack.Navigator
-          initialRouteName={isAuthorized ? "Principal" : "Secondary"}
-        >
-          <Stack.Screen
-            name="Secondary"
-            component={NoAuthorizedNavigation}
-            options={{ headerShown: false }}
-          />
-          <Stack.Screen
-            name="Principal"
-            component={AuthorizedNavigation}
-            options={{ headerShown: false }}
-          />
-          <Stack.Screen
-            name="GrabarBorrar"
-            component={GrabarBorrar}
-            options={{
-              title: "Borrar",
-              headerStyle: { backgroundColor: "#0d47a1" },
-              headerTintColor: "white",
-            }}
-          />
-          <Stack.Screen name="Welcome" component={Welcome} />
+        <Stack.Navigator>
+          {!isAuthorized ? (
+            // FLUJO DE ACTIVACIÓN / CONFIGURACIÓN
+            !hasMasterCode ? (
+              <Stack.Screen 
+                name="MasterCode" 
+                options={{ headerShown: false }}
+              >
+                {(props) => (
+                  <MasterCode 
+                    {...props} 
+                    onActivated={(product) => {
+                      setHasMasterCode(true);
+                      setActiveProduct(product);
+                    }} 
+                  />
+                )}
+              </Stack.Screen>
+            ) : (
+              // Ya tiene código máster, todos van a la configuración (Welcome -> Configuration)
+              <Stack.Screen
+                name="Secondary"
+                options={{ headerShown: false }}
+              >
+                {(props) => (
+                  <NoAuthorizedNavigation 
+                    {...props} 
+                    activeProduct={activeProduct}
+                    onAuthorized={() => setIsAuthorized(true)}
+                  />
+                )}
+              </Stack.Screen>
+            )
+          ) : (
+            // FLUJO DE APP ACTIVA
+            activeProduct === "docta_panico" ? (
+              <Stack.Screen
+                name="Principal"
+                component={AuthorizedNavigation}
+                options={{ headerShown: false }}
+              />
+            ) : (
+              // Nueva navegación para otros productos (Vigilantes, Ciudadanos, etc.)
+              <Stack.Screen 
+                name="ProductSpecific" 
+                options={{ headerShown: false }} 
+              >
+                {(props) => (
+                  <ProductSpecificNavigation 
+                    {...props} 
+                    onReset={(resetAll) => {
+                      setIsAuthorized(false);
+                      if (resetAll) {
+                        setHasMasterCode(false);
+                        setActiveProduct(null);
+                      }
+                    }}
+                  />
+                )}
+              </Stack.Screen>
+            )
+          )}
+          
+          {/* Pantallas comunes o modales */}
           <Stack.Screen
             name="User"
             component={User}
@@ -462,8 +783,6 @@ export default function App() {
               headerTintColor: "white",
             }}
           />
-          <Stack.Screen name="Configuration" component={Configuration} />
-          <Stack.Screen name="Home" component={AllButtons} />
         </Stack.Navigator>
       </NavigationContainer>
       <EventModal 
@@ -481,7 +800,7 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(0, 0, 0, 0.7)',
     justifyContent: 'center',
     alignItems: 'center',
-  },
+    },
   modalContent: {
     width: '85%',
     backgroundColor: 'white',
@@ -529,3 +848,5 @@ const styles = StyleSheet.create({
     color: '#2C3E50',
   },
 });
+
+export default Sentry.wrap(App);

@@ -18,7 +18,7 @@ import { LinearGradient } from "expo-linear-gradient";
 import SecondaryButton from "../component/SecondaryButton";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 
-const AllButtons = () => {
+const AllButtons = ({ onPanicSuccess }) => {
   const [showProgressBar, setShowProgressBar] = useState(false);
   const animatedValue = useRef(new Animated.Value(0)).current;
   const startTimeRef = useRef(null);
@@ -96,6 +96,10 @@ const AllButtons = () => {
         eventCode: "120",
       });
       console.log(`${eventType} enviado`, result);
+      
+      // Activar modo multimedia si se envió con éxito
+      if (onPanicSuccess) onPanicSuccess();
+      
     } catch (error) {
       console.error(error);
     }

@@ -18,6 +18,10 @@ Notifications.setNotificationHandler({
  * @param {string} licenseCode - El código de licencia del usuario
  */
 export async function registerForPushNotificationsAsync(licenseCode) {
+  // 🚫 NOTIFICACIONES ANULADAS TEMPORALMENTE
+  console.log("Notificaciones anuladas internamente.");
+  return null;
+
   let token;
 
   if (Platform.OS === 'android') {

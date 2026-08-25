@@ -1,16 +1,22 @@
-import { Text, View, StyleSheet, Image, TouchableOpacity, ScrollView } from "react-native";
+import { Text, View, StyleSheet, Image, TouchableOpacity, ScrollView, Alert, Modal, TextInput } from "react-native";
 import AsyncStorage from "@react-native-async-storage/async-storage";
+import * as Updates from 'expo-updates';
 import { useEffect, useState } from "react";
 import { useCallback } from "react";
 import { useFocusEffect } from "@react-navigation/native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
-import ClaveModal from "../component/ClaveModal";
+import { deleteLicenseAccount } from "../util/Api";
 
 function User({ navigation }) {
   const [licencia, setLicencia] = useState(null);
   const [isModalVisible, setIsModalVisible] = useState(false);
   const [isBorrarAccess, setIsBorrarAccess] = useState(false);
+  const [isAdminModalVisible, setIsAdminModalVisible] = useState(false);
+  const [adminPasswordInput, setAdminPasswordInput] = useState("");
+  const [isDeleteModalVisible, setIsDeleteModalVisible] = useState(false);
+  const [licenseInput, setLicenseInput] = useState("");
+  const [isLicenseValid, setIsLicenseValid] = useState(null); // null, true, false
   const insets = useSafeAreaInsets();
 
   // Función para traducir el estado
@@ -32,11 +38,7 @@ function User({ navigation }) {
   };
   const maskLicenseCode = (code) => {
     if (!code) return ""; // Devuelve una cadena vacía si code es null o undefined
-    if (code.length >= 4) {
-      // Reemplazar los últimos 4 caracteres con asteriscos
-      return code.slice(0, -4) + "****";
-    }
-    return code; // Si el código tiene menos de 24 caracteres, se devuelve tal cual
+    return code; // Se devuelve el código completo sin censura
   };
 
   // Función para recuperar la licencia almacenada
@@ -70,7 +72,76 @@ function User({ navigation }) {
 
   const Borrar = async () => {
     await AsyncStorage.removeItem("@licencias");
+    setLicencia(null);
     console.log("borrado");
+  };
+
+  const handleAdminDelete = () => {
+    Alert.alert(
+      "Acceso Administrativo",
+      "¿Desea resetear la configuración local de la aplicación?",
+      [
+        { text: "Cancelar", style: "cancel" },
+        { 
+          text: "Continuar", 
+          onPress: () => {
+            setAdminPasswordInput("");
+            setIsAdminModalVisible(true);
+          } 
+        }
+      ]
+    );
+  };
+
+  const confirmAdminDelete = async () => {
+    if (adminPasswordInput === "253614") {
+      await Borrar();
+      setIsAdminModalVisible(false);
+      Alert.alert("Éxito", "La configuración local ha sido reseteada.", [
+        { 
+          text: "OK", 
+          onPress: () => {
+            setTimeout(async () => {
+              try {
+                await Updates.reloadAsync();
+              } catch (e) {
+                console.warn("reloadAsync falló");
+              }
+            }, 500);
+          } 
+        }
+      ]);
+    } else {
+      Alert.alert("Error", "Clave incorrecta.");
+    }
+  };
+
+  const handleProductChange = async () => {
+    Alert.alert(
+      "Cambio de Producto",
+      "Esto eliminará TODA la configuración, incluyendo el código maestro. ¿Desea continuar?",
+      [
+        { text: "Cancelar", style: "cancel" },
+        { 
+          text: "Sí, resetear todo", 
+          style: "destructive",
+          onPress: async () => {
+            // Borrado selectivo para no afectar claves de sistema de Expo
+            await AsyncStorage.removeItem("@licencias");
+            await AsyncStorage.removeItem("@master_config");
+            await AsyncStorage.removeItem("@master_token");
+            
+            setTimeout(async () => {
+              try {
+                await Updates.reloadAsync();
+              } catch (e) {
+                console.warn("reloadAsync falló en desarrollo");
+              }
+            }, 500);
+          } 
+        }
+      ]
+    );
   };
 
   //Verifica si hay datos de licencia para mostrar
@@ -83,6 +154,7 @@ function User({ navigation }) {
         >
           <View>
             <Text style={styles.withoutLicense}>No posee Licencia...</Text>
+            <Text style={styles.restartApp}>Por favor, reinicie su aplicación</Text>
           </View>
           <View style={[styles.withoutLicenseImage, { paddingBottom: Math.max(insets.bottom, 20) }]}>
             <Image
@@ -90,7 +162,7 @@ function User({ navigation }) {
               style={{ width: 59, height: 59 }}
             />
           </View>
-          <TouchableOpacity style={styles.buttonUpdate} onPress={Borrar}>
+          <TouchableOpacity style={styles.buttonUpdate} onPress={handleAdminDelete}>
             <Text style={styles.textImage}>
               Producto desarrollado por Desit SA
             </Text>
@@ -104,24 +176,66 @@ function User({ navigation }) {
     /* borrado */
   }
 
-  const openClaveModal = () => {
-    setIsModalVisible(true); // Mostrar modal para ingresar la clave
+  const handleDeleteAccount = async () => {
+    Alert.alert(
+      "Eliminar Licencia",
+      "Para continuar, deberás validar tu identidad ingresando los últimos 4 dígitos de tu licencia.",
+      [
+        { text: "Cancelar", style: "cancel" },
+        { 
+          text: "Continuar", 
+          onPress: () => {
+            setLicenseInput("");
+            setIsLicenseValid(null);
+            setIsDeleteModalVisible(true);
+          } 
+        }
+      ]
+    );
   };
-  const closeClaveModal = () => {
-    setIsModalVisible(false); // Cerrar modal
-  };
-  const handleClaveSubmit = (claveIngresada) => {
-    if (claveIngresada === "253614") {
-      setIsBorrarAccess(true); // Si la clave es correcta, permitir acceso
-      navigation.navigate("GrabarBorrar"); // Navegar a la pantalla GrabarBorrar
-    } else {
-      alert("Clave incorrecta"); // Si la clave es incorrecta
+
+  const confirmDelete = async () => {
+    if (!isLicenseValid) return;
+
+    try {
+      if (licencia && licencia.code) {
+        await deleteLicenseAccount(licencia.code);
+      }
+      await AsyncStorage.removeItem("@licencias");
+      setLicencia(null);
+      setIsDeleteModalVisible(false);
+      Alert.alert("Éxito", "La licencia ha sido eliminada correctamente.", [
+        { 
+          text: "OK", 
+          onPress: () => {
+            setTimeout(async () => {
+              try {
+                await Updates.reloadAsync();
+              } catch (e) {
+                console.warn("reloadAsync falló");
+              }
+            }, 500);
+          } 
+        }
+      ]);
+    } catch (error) {
+      Alert.alert("Error", "No se pudo eliminar la licencia del servidor. Inténtalo de nuevo.");
     }
-    closeClaveModal(); // Cerrar modal
   };
-  {
-    /* borrado */
-  }
+
+  const handleLicenseInputChange = (text) => {
+    setLicenseInput(text);
+    if (text.length === 4) {
+      const lastFour = licencia.code.slice(-4);
+      if (text === lastFour) {
+        setIsLicenseValid(true);
+      } else {
+        setIsLicenseValid(false);
+      }
+    } else {
+      setIsLicenseValid(null);
+    }
+  };
 
   return (
     <>
@@ -170,22 +284,131 @@ function User({ navigation }) {
               style={{ width: 59, height: 59 }}
             />
           </View>
-          <TouchableOpacity
-            style={styles.buttonUpdate}
-            onPress={openClaveModal}
-          >
+          
+          <TouchableOpacity onPress={handleAdminDelete}>
             <Text style={styles.textImage}>
               Producto desarrollado por Desit SA
             </Text>
           </TouchableOpacity>
           <Text style={styles.textImage}>Version 6.0.1 Docta Comunitarias</Text>
+
+          <TouchableOpacity
+            style={styles.deleteButton}
+            onPress={handleDeleteAccount}
+          >
+            <Text style={styles.deleteButtonText}>
+              Eliminar Licencia y Datos
+            </Text>
+          </TouchableOpacity>
         </View>
       </ScrollView>
-      <ClaveModal
-        visible={isModalVisible}
-        onClose={closeClaveModal}
-        onSubmit={handleClaveSubmit}
-      />
+
+      {/* Modal de Validación para Eliminación */}
+      <Modal
+        visible={isDeleteModalVisible}
+        transparent={true}
+        animationType="fade"
+        onRequestClose={() => setIsDeleteModalVisible(false)}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.validationModalContent}>
+            <Text style={styles.modalTitle}>Validar Eliminación</Text>
+            <Text style={styles.modalSubtitle}>
+              Ingresa los últimos 4 caracteres de tu licencia para confirmar:
+            </Text>
+            
+            <Text style={styles.licenseDisplay}>
+              Licencia: {licencia.code}
+            </Text>
+            
+            <TextInput
+              style={[
+                styles.licenseInput,
+                isLicenseValid === true && styles.licenseInputValid,
+                isLicenseValid === false && styles.licenseInputInvalid,
+              ]}
+              value={licenseInput}
+              onChangeText={handleLicenseInputChange}
+              keyboardType="default"
+              autoCapitalize="none"
+              maxLength={4}
+              placeholder="XXXX"
+              placeholderTextColor="#999"
+            />
+
+            <View style={styles.modalButtonContainer}>
+              <TouchableOpacity 
+                style={[styles.modalButton, styles.cancelButton]} 
+                onPress={() => setIsDeleteModalVisible(false)}
+              >
+                <Text style={styles.modalButtonText}>Cancelar</Text>
+              </TouchableOpacity>
+              
+              <TouchableOpacity 
+                style={[
+                  styles.modalButton, 
+                  styles.confirmButton,
+                  !isLicenseValid && styles.disabledButton
+                ]} 
+                onPress={confirmDelete}
+                disabled={!isLicenseValid}
+              >
+                <Text style={styles.modalButtonText}>Eliminar</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
+      
+      {/* Modal de Acceso Administrativo */}
+      <Modal
+        visible={isAdminModalVisible}
+        transparent={true}
+        animationType="slide"
+        onRequestClose={() => setIsAdminModalVisible(false)}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.validationModalContent}>
+            <Text style={styles.modalTitle}>Acceso Administrador</Text>
+            <Text style={styles.modalSubtitle}>
+              Ingrese la clave de seguridad para resetear la configuración:
+            </Text>
+            
+            <TextInput
+              style={styles.licenseInput}
+              value={adminPasswordInput}
+              onChangeText={setAdminPasswordInput}
+              keyboardType="numeric"
+              secureTextEntry={true}
+              placeholder="******"
+              placeholderTextColor="#999"
+            />
+
+            <View style={styles.modalButtonContainer}>
+              <TouchableOpacity 
+                style={[styles.modalButton, styles.cancelButton]} 
+                onPress={() => setIsAdminModalVisible(false)}
+              >
+                <Text style={styles.modalButtonText}>Cancelar</Text>
+              </TouchableOpacity>
+              
+              <TouchableOpacity 
+                style={[styles.modalButton, styles.confirmButton]} 
+                onPress={confirmAdminDelete}
+              >
+                <Text style={styles.modalButtonText}>Confirmar</Text>
+              </TouchableOpacity>
+            </View>
+
+            <TouchableOpacity 
+              style={[styles.changeProductButton, { marginTop: 20 }]} 
+              onPress={handleProductChange}
+            >
+              <Text style={styles.changeProductButtonText}>Cambiar de Producto (Master Reset)</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
     </>
   );
 }
@@ -224,7 +447,7 @@ const styles = StyleSheet.create({
   },
   textImage: {
     textAlign: "center",
-    marginBottom: 20,
+    marginBottom: 10,
     fontSize: 15,
   },
   imageContainer: {
@@ -235,6 +458,14 @@ const styles = StyleSheet.create({
     marginTop: 150,
     fontFamily: "open-sans",
     fontSize: 19,
+    textAlign: "center",
+  },
+  restartApp: {
+    marginTop: 10,
+    fontFamily: "open-sans-bold",
+    fontSize: 16,
+    color: "#f44336",
+    textAlign: "center",
   },
   withoutLicenseImage: {
     marginTop: 300,
@@ -246,5 +477,126 @@ const styles = StyleSheet.create({
   },
   container2: {
     alignItems: "center", // Asegurarse de que el contenido esté centrado
+  },
+  deleteButton: {
+    backgroundColor: "#f44336",
+    paddingVertical: 12,
+    paddingHorizontal: 25,
+    borderRadius: 8,
+    marginBottom: 20,
+    width: "100%",
+    alignItems: "center",
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.25,
+    shadowRadius: 3.84,
+    elevation: 5,
+  },
+  deleteButtonText: {
+    color: "white",
+    fontSize: 16,
+    fontFamily: "open-sans-bold",
+    fontWeight: "bold",
+  },
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.6)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  validationModalContent: {
+    width: '85%',
+    backgroundColor: 'white',
+    borderRadius: 15,
+    padding: 25,
+    alignItems: 'center',
+    elevation: 10,
+  },
+  modalTitle: {
+    fontSize: 20,
+    fontFamily: 'open-sans-bold',
+    color: '#333',
+    marginBottom: 10,
+  },
+  modalSubtitle: {
+    fontSize: 14,
+    fontFamily: 'open-sans',
+    color: '#666',
+    textAlign: 'center',
+    marginBottom: 10,
+  },
+  licenseDisplay: {
+    fontSize: 15,
+    fontFamily: 'open-sans-bold',
+    color: '#EB7F27',
+    backgroundColor: '#FFF3E0',
+    padding: 10,
+    borderRadius: 8,
+    marginBottom: 20,
+    textAlign: 'center',
+    width: '100%',
+  },
+  licenseInput: {
+    width: '60%',
+    height: 50,
+    borderWidth: 2,
+    borderColor: '#ccc',
+    borderRadius: 10,
+    textAlign: 'center',
+    fontSize: 24,
+    fontFamily: 'open-sans-bold',
+    color: '#333',
+    marginBottom: 25,
+  },
+  licenseInputValid: {
+    borderColor: '#4CAF50',
+    color: '#4CAF50',
+  },
+  licenseInputInvalid: {
+    borderColor: '#f44336',
+    color: '#f44336',
+  },
+  modalButtonContainer: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    width: '100%',
+  },
+  modalButton: {
+    flex: 1,
+    height: 45,
+    borderRadius: 8,
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginHorizontal: 5,
+  },
+  cancelButton: {
+    backgroundColor: '#9E9E9E',
+  },
+  confirmButton: {
+    backgroundColor: '#f44336',
+  },
+  disabledButton: {
+    backgroundColor: '#ef9a9a',
+    opacity: 0.6,
+  },
+  modalButtonText: {
+    color: 'white',
+    fontSize: 16,
+    fontFamily: 'open-sans-bold',
+  },
+  changeProductButton: {
+    backgroundColor: '#222266',
+    width: '100%',
+    height: 45,
+    borderRadius: 8,
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingHorizontal: 10,
+  },
+  changeProductButtonText: {
+    color: 'white',
+    fontSize: 14,
+    fontFamily: 'open-sans-bold',
+    textAlign: 'center',
   },
 });
