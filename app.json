@@ -53,14 +53,23 @@
           }
         }
       ],
-      "expo-audio"
+      "expo-audio",
+      "@sentry/react-native",
+      "expo-status-bar",
+      [
+        "expo-local-authentication",
+        {
+          "faceIDPermission": "Vigicontrol usa Face ID para desbloquear tu usuario en el ingreso."
+        }
+      ]
     ],
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.pedrodarrigo.DesitAppV33",
       "buildNumber": "2",
       "infoPlist": {
-        "ITSAppUsesNonExemptEncryption": false
+        "ITSAppUsesNonExemptEncryption": false,
+        "NSFaceIDUsageDescription": "Vigicontrol usa Face ID para desbloquear tu usuario en el ingreso."
       }
     },
     "android": {

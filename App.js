@@ -10,7 +10,8 @@ import { NavigationContainer } from "@react-navigation/native";
 import { createNativeStackNavigator } from "@react-navigation/native-stack";
 import { createBottomTabNavigator } from "@react-navigation/bottom-tabs";
 import { Ionicons } from "@expo/vector-icons";
-import { Image, Modal, View, Text, TouchableOpacity, StyleSheet, Alert } from "react-native";
+import { Image, Modal, View, Text, TouchableOpacity, StyleSheet, Alert, ActivityIndicator, ScrollView } from "react-native";
+import AsyncStorageDumpButton from "./components/AsyncStorageDumpButton";
 import { useFonts } from "expo-font";
 import * as SplashScreen from "expo-splash-screen";
 import { useEffect, useState, useRef } from "react";
@@ -22,7 +23,15 @@ import User from "./screen/User";
 import Welcome from "./screen/Welcome";
 import MasterCode from "./screen/MasterCode";
 import Multimedia from "./screen/Multimedia";
+import HomeVigi from "./screen/Vigicontrol/HomeVigi";
+import LoginVigi from "./screen/Vigicontrol/LoginVigi";
 import { getPanicAppByCode, registerNotificationToken } from "./util/Api";
+import {
+  getDeviceIdentity,
+  sendDeviceIdentity,
+  getStoredSession,
+  clearSession,
+} from "./util/NuevaApi";
 import { registerForPushNotificationsAsync } from "./util/Notifications";
 import * as Notifications from 'expo-notifications';
 import * as Updates from 'expo-updates';
@@ -34,6 +43,56 @@ const BottomTabs = createBottomTabNavigator();
 const getStorageKey = (product) => {
   if (!product || product === "docta_panico") return "@licencias";
   return `@licencias_${product}`;
+};
+
+// 🔹 Clave que indica que Vigilantes ya está activado en este dispositivo.
+// Si existe, la app entra directo a HomeVigi sin pasar por MasterCode ni Welcome.
+const VIGI_KEY = getStorageKey("vigilantes");
+
+// El backend puede devolver el producto como "vigilantes", "Vigilantes",
+// "vigicontrol", etc. Normalizamos para no depender de la capitalización.
+const isVigiProduct = (product) =>
+  typeof product === "string" && /vigi/i.test(product.trim());
+
+// Busca cualquier clave de licencia de Vigilantes ya guardada
+// (@licencias_vigilantes, @licencias_Vigilantes, @licencias_vigicontrol, ...).
+const findVigiLicenseKey = async () => {
+  try {
+    const keys = await AsyncStorage.getAllKeys();
+    console.log("🔑 Claves en AsyncStorage:", keys);
+    return keys.find((k) => /^@licencias_vigi/i.test(k)) || null;
+  } catch (error) {
+    console.error("Error leyendo claves de AsyncStorage:", error);
+    return null;
+  }
+};
+
+// Borra la licencia del producto. Para Vigilantes barre todas las variantes de
+// clave, si no el atajo de arranque volvería a detectarla y el reset no tendría
+// efecto.
+const removeProductLicense = async (product) => {
+  if (isVigiProduct(product)) {
+    const keys = await AsyncStorage.getAllKeys();
+    const vigiKeys = keys.filter((k) => /^@licencias_vigi/i.test(k));
+    if (vigiKeys.length) await AsyncStorage.multiRemove(vigiKeys);
+    return;
+  }
+  await AsyncStorage.removeItem(getStorageKey(product));
+};
+
+const authorizeIndependentProduct = async (product) => {
+  const dummyLicense = {
+    result: {
+      licenseCreated: {
+        accountNumber: "MASTER",
+        panicAppCode: product ? product.toUpperCase() : "PRODUCT",
+        code: "ACTIVADO-" + (product || "NUEVO"),
+        targetDeviceId: "MASTER-DEVICE",
+        status: "active",
+      },
+    },
+  };
+  await AsyncStorage.setItem(getStorageKey(product), JSON.stringify(dummyLicense));
 };
 
 function EventModal({ visible, onClose, eventData }) {
@@ -344,10 +403,16 @@ function NoAuthorizedNavigation({ activeProduct, onAuthorized }) {
   );
 }
 
-function ProductSpecificNavigation({ onReset }) {
+function ProductSpecificNavigation({ onReset, activeProduct }) {
   const [productName, setProductName] = useState("Vigilantes");
+  const [productKey, setProductKey] = useState(activeProduct || "vigilantes");
   const [logoUrl, setLogoUrl] = useState("https://i.imgur.com/aIYhRsN.png");
   const [isMultimediaEnabled, setIsMultimediaEnabled] = useState(false);
+  const [deviceId, setDeviceId] = useState("");
+  const [deviceSource, setDeviceSource] = useState("");
+  const [registeringDevice, setRegisteringDevice] = useState(false);
+  const [sessionReady, setSessionReady] = useState(false);
+  const [session, setSession] = useState(null);
   const timerRef = useRef(null);
 
   const activateMultimedia = () => {
@@ -366,19 +431,91 @@ function ProductSpecificNavigation({ onReset }) {
   useEffect(() => {
     const loadData = async () => {
       try {
-        const masterData = await AsyncStorage.getItem("@master_config");
-        if (masterData) {
-          const parsed = JSON.parse(masterData);
-          if (parsed.product === "vigilantes") setProductName("Vigilantes");
-          else if (parsed.product === "ciudadanos") setProductName("Ciudadanos");
-          else setProductName(parsed.product.charAt(0).toUpperCase() + parsed.product.slice(1));
+        // El producto que ya resolvió App() manda; master_config es solo respaldo.
+        let product = activeProduct;
+        if (!product) {
+          const masterData = await AsyncStorage.getItem("@master_config");
+          if (masterData) product = JSON.parse(masterData).product;
         }
+        if (!product) return;
+
+        setProductKey(product);
+        if (isVigiProduct(product)) setProductName("Vigilantes");
+        else if (product.toLowerCase() === "ciudadanos") setProductName("Ciudadanos");
+        else setProductName(product.charAt(0).toUpperCase() + product.slice(1));
       } catch (error) {
         console.error("Error loading master config in ProductSpecificNavigation:", error);
       }
     };
     loadData();
+  }, [activeProduct]);
+
+  useEffect(() => {
+    let mounted = true;
+    (async () => {
+      try {
+        const identity = await getDeviceIdentity();
+        if (!mounted) return;
+        setDeviceId(identity.deviceId || "");
+        setDeviceSource(identity.source || "");
+      } catch (error) {
+        console.warn("No se pudo leer deviceId:", error?.message || error);
+      }
+    })();
+    return () => {
+      mounted = false;
+    };
   }, []);
+
+  useEffect(() => {
+    let mounted = true;
+    (async () => {
+      try {
+        const stored = await getStoredSession();
+        if (!mounted) return;
+        setSession(stored);
+        if (stored?.deviceId) setDeviceId(stored.deviceId);
+      } catch (error) {
+        console.warn("No se pudo leer sesión:", error?.message || error);
+      } finally {
+        if (mounted) setSessionReady(true);
+      }
+    })();
+    return () => {
+      mounted = false;
+    };
+  }, []);
+
+  const registerThisDevice = async () => {
+    setRegisteringDevice(true);
+    try {
+      const result = await sendDeviceIdentity();
+      const id = result?.deviceId || "";
+      setDeviceId(id);
+      setDeviceSource(result?.source || deviceSource);
+      Alert.alert(
+        "Dispositivo registrado",
+        id
+          ? `Se envió al servidor.\n\ndeviceId:\n${id}\n\nEn el dashboard vinculalo a la empresa.`
+          : "Se envió al servidor. Vinculalo a la empresa desde el dashboard.",
+      );
+    } catch (error) {
+      console.error("registerThisDevice:", error);
+      Alert.alert(
+        "Error",
+        error?.response?.data?.message ||
+          error?.message ||
+          "No se pudo registrar el dispositivo. Revisá que el servidor local esté activo.",
+      );
+    } finally {
+      setRegisteringDevice(false);
+    }
+  };
+
+  const logoutSession = async () => {
+    await clearSession();
+    setSession(null);
+  };
 
   const resetToWelcome = async () => {
     Alert.alert("Reiniciar", "¿Desea volver a la configuración inicial del producto?", [
@@ -386,11 +523,12 @@ function ProductSpecificNavigation({ onReset }) {
       { 
         text: "Sí, reiniciar", 
         onPress: async () => {
-          onReset(false); 
-          
-          const specificKey = getStorageKey(productName.toLowerCase());
-          await AsyncStorage.removeItem(specificKey);
-          
+          onReset(false);
+
+          await clearSession();
+          setSession(null);
+          await removeProductLicense(productKey || productName.toLowerCase());
+
           try {
             // await Updates.reloadAsync();
           } catch (e) {
@@ -408,10 +546,11 @@ function ProductSpecificNavigation({ onReset }) {
         text: "Sí, borrar todo", 
         style: "destructive",
         onPress: async () => {
-          onReset(true); 
-          
-          const specificKey = getStorageKey(productName.toLowerCase());
-          await AsyncStorage.removeItem(specificKey);
+          onReset(true);
+
+          await clearSession();
+          setSession(null);
+          await removeProductLicense(productKey || productName.toLowerCase());
           await AsyncStorage.removeItem("@master_config");
           await AsyncStorage.removeItem("@master_token");
           
@@ -424,6 +563,26 @@ function ProductSpecificNavigation({ onReset }) {
       }
     ]);
   };
+
+  if (!sessionReady) {
+    return (
+      <View style={{ flex: 1, justifyContent: "center", alignItems: "center", backgroundColor: "#F5F7FA" }}>
+        <ActivityIndicator size="large" color="#0F76C4" />
+      </View>
+    );
+  }
+
+  if (isVigiProduct(productKey) && !session) {
+    return (
+      <LoginVigi
+        productName={productName}
+        onLoggedIn={(nextSession) => {
+          setSession(nextSession);
+          if (nextSession?.deviceId) setDeviceId(nextSession.deviceId);
+        }}
+      />
+    );
+  }
 
   return (
     <BottomTabs.Navigator
@@ -445,23 +604,30 @@ function ProductSpecificNavigation({ onReset }) {
           headerTitleStyle: { fontSize: 24, fontWeight: 'bold' }
         }}
       >
-        {() => (
-          <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: '#F5F7FA' }}>
-            <Ionicons name="shield-checkmark-outline" size={100} color="#222266" />
-            <Text style={{ fontSize: 32, fontFamily: 'open-sans-bold', color: '#222266', marginTop: 20 }}>
-              {productName}
-            </Text>
-            <Text style={{ fontSize: 16, fontFamily: 'open-sans', color: '#666', marginTop: 10 }}>
-              Panel de Control Activo
-            </Text>
-            <TouchableOpacity 
-              onPress={activateMultimedia}
-              style={{ marginTop: 20, backgroundColor: '#E74C3C', padding: 10, borderRadius: 10 }}
-            >
-              <Text style={{ color: 'white' }}>SIMULAR PÁNICO (Activar Multimedia)</Text>
-            </TouchableOpacity>
-          </View>
-        )}
+        {() =>
+          isVigiProduct(productKey) ? (
+            <HomeVigi
+              onActivateMultimedia={activateMultimedia}
+              productName={productName}
+            />
+          ) : (
+            <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: '#F5F7FA' }}>
+              <Ionicons name="shield-checkmark-outline" size={100} color="#222266" />
+              <Text style={{ fontSize: 32, fontFamily: 'open-sans-bold', color: '#222266', marginTop: 20 }}>
+                {productName}
+              </Text>
+              <Text style={{ fontSize: 16, fontFamily: 'open-sans', color: '#666', marginTop: 10 }}>
+                Panel de Control Activo
+              </Text>
+              <TouchableOpacity
+                onPress={activateMultimedia}
+                style={{ marginTop: 20, backgroundColor: '#E74C3C', padding: 10, borderRadius: 10 }}
+              >
+                <Text style={{ color: 'white' }}>SIMULAR PÁNICO (Activar Multimedia)</Text>
+              </TouchableOpacity>
+            </View>
+          )
+        }
       </BottomTabs.Screen>
 
       {isMultimediaEnabled && (
@@ -493,10 +659,76 @@ function ProductSpecificNavigation({ onReset }) {
         }}
       >
         {() => (
-          <View style={{ flex: 1, padding: 30, justifyContent: 'center', backgroundColor: '#F5F7FA' }}>
-            <Text style={{ textAlign: 'center', marginBottom: 40, fontSize: 18, color: '#666', fontFamily: 'open-sans' }}>
+          <ScrollView
+            style={{ flex: 1, backgroundColor: '#F5F7FA' }}
+            contentContainerStyle={{ padding: 30, paddingBottom: 40 }}
+          >
+            <Text style={{ textAlign: 'center', marginBottom: 24, fontSize: 18, color: '#666', fontFamily: 'open-sans' }}>
               Gestión de {productName}
             </Text>
+
+            <View style={{ backgroundColor: 'white', borderRadius: 12, padding: 16, marginBottom: 20, elevation: 2 }}>
+              <Text style={{ fontSize: 13, color: '#666', marginBottom: 6, fontFamily: 'open-sans' }}>
+                Sesión
+              </Text>
+              <Text style={{ fontSize: 15, color: '#222', fontFamily: 'open-sans-bold', marginBottom: 4 }}>
+                {session?.user?.username || "—"}
+              </Text>
+              <Text style={{ fontSize: 12, color: '#666', fontFamily: 'open-sans', marginBottom: 12 }}>
+                {session?.user?.email || ""} · {session?.user?.role || ""}
+              </Text>
+              <Text style={{ fontSize: 13, color: '#666', marginBottom: 6, fontFamily: 'open-sans' }}>
+                deviceId {deviceSource ? `(${deviceSource})` : ""}
+              </Text>
+              <Text
+                selectable
+                style={{ fontSize: 13, color: '#222', fontFamily: 'open-sans-bold', marginBottom: 14 }}
+              >
+                {deviceId || "Leyendo..."}
+              </Text>
+              <TouchableOpacity
+                onPress={registerThisDevice}
+                disabled={registeringDevice}
+                style={{
+                  backgroundColor: '#0F76C4',
+                  padding: 14,
+                  borderRadius: 10,
+                  marginBottom: 10,
+                  opacity: registeringDevice ? 0.7 : 1,
+                }}
+              >
+                {registeringDevice ? (
+                  <ActivityIndicator color="#fff" />
+                ) : (
+                  <Text style={{ color: 'white', textAlign: 'center', fontWeight: 'bold', fontSize: 15 }}>
+                    REGISTRAR DISPOSITIVO EN SERVIDOR
+                  </Text>
+                )}
+              </TouchableOpacity>
+              <TouchableOpacity
+                onPress={() => {
+                  Alert.alert("Cerrar sesión", "¿Salir de esta cuenta?", [
+                    { text: "Cancelar", style: "cancel" },
+                    {
+                      text: "Cerrar sesión",
+                      style: "destructive",
+                      onPress: logoutSession,
+                    },
+                  ]);
+                }}
+                style={{
+                  backgroundColor: '#64748B',
+                  padding: 14,
+                  borderRadius: 10,
+                }}
+              >
+                <Text style={{ color: 'white', textAlign: 'center', fontWeight: 'bold', fontSize: 15 }}>
+                  CERRAR SESIÓN
+                </Text>
+              </TouchableOpacity>
+            </View>
+
+            <AsyncStorageDumpButton label="VER ASYNCSTORAGE" />
 
             <TouchableOpacity 
               onPress={resetToWelcome}
@@ -519,7 +751,7 @@ function ProductSpecificNavigation({ onReset }) {
             <Text style={{ marginTop: 50, textAlign: 'center', color: '#AAA', fontSize: 12 }}>
               Desit SA - Desarrollo Independiente
             </Text>
-          </View>
+          </ScrollView>
         )}
       </BottomTabs.Screen>
     </BottomTabs.Navigator>
@@ -639,7 +871,6 @@ function App() {
         await Asset.loadAsync([
           require("./assets/logonuevo.png"),
           require("./assets/126353.jpg"),
-          require("./assets/icon.png"),
           require("./assets/adaptive-icon.png"),
           require("./assets/splash-icon.png"),
           require("./assets/botonpanico.png"),
@@ -656,6 +887,29 @@ function App() {
         await new Promise((resolve) => setTimeout(resolve, 2000));
         
         const masterData = await AsyncStorage.getItem("@master_config");
+
+        // 🚀 VIGILANTES: si ya aceptó T&C (hay licencia), entra a la app.
+        // Si solo tiene master_config, pasa por Welcome (términos).
+        const vigiKey = await findVigiLicenseKey();
+        const masterProduct = masterData ? JSON.parse(masterData).product : null;
+        console.log("🧭 master_config.product:", masterProduct, "| clave vigi:", vigiKey);
+
+        if (vigiKey) {
+          console.log("🛡️ Vigilantes con T&C aceptados → app");
+          setHasMasterCode(true);
+          setActiveProduct("vigilantes");
+          setIsAuthorized(true);
+          return;
+        }
+
+        if (isVigiProduct(masterProduct)) {
+          console.log("🛡️ Vigilantes sin T&C → Welcome");
+          setHasMasterCode(true);
+          setActiveProduct("vigilantes");
+          setIsAuthorized(false);
+          return;
+        }
+
         let activeProd = null;
 
         if (masterData !== null) {
@@ -663,7 +917,7 @@ function App() {
           activeProd = parsedMaster.product;
           setHasMasterCode(true);
           setActiveProduct(activeProd);
-          
+
           // Verificamos la licencia específica de este producto
           const specificKey = getStorageKey(activeProd);
           const licenseData = await AsyncStorage.getItem(specificKey);
@@ -690,6 +944,7 @@ function App() {
         console.warn("❌ Error durante la preparación:", e);
       } finally {
         setAppIsReady(true);
+        SplashScreen.hideAsync().catch(() => {});
       }
     }
     prepare();
@@ -720,10 +975,12 @@ function App() {
                 {(props) => (
                   <MasterCode 
                     {...props} 
-                    onActivated={(product) => {
+                    onActivated={async (product) => {
+                      // Tras el código máster siempre pasa por Welcome (T&C).
+                      // La autorización (licencia) ocurre al tocar CONTINUAR allí.
                       setHasMasterCode(true);
                       setActiveProduct(product);
-                    }} 
+                    }}
                   />
                 )}
               </Stack.Screen>
@@ -757,8 +1014,9 @@ function App() {
                 options={{ headerShown: false }} 
               >
                 {(props) => (
-                  <ProductSpecificNavigation 
-                    {...props} 
+                  <ProductSpecificNavigation
+                    {...props}
+                    activeProduct={activeProduct}
                     onReset={(resetAll) => {
                       setIsAuthorized(false);
                       if (resetAll) {

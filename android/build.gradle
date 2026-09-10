@@ -23,3 +23,12 @@ allprojects {
 
 apply plugin: "expo-root-project"
 apply plugin: "com.facebook.react.rootproject"
+
+// Evita OOM Metaspace en lintVital* de módulos Expo / RN (sin tocar lint DSL tarde).
+gradle.taskGraph.whenReady { graph ->
+  graph.allTasks.findAll { task ->
+    task.name.toLowerCase().contains("lintvital")
+  }.each { task ->
+    task.enabled = false
+  }
+}
