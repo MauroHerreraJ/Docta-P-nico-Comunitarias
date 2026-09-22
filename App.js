@@ -14,6 +14,11 @@ import { Image, Modal, View, Text, TouchableOpacity, StyleSheet, Alert } from "r
 import { useFonts } from "expo-font";
 import * as SplashScreen from "expo-splash-screen";
 import { useEffect, useState, useRef } from "react";
+
+// Mantener el Splash Screen visible mientras se cargan los recursos
+SplashScreen.preventAutoHideAsync().catch(() => {
+  /* Ignorar errores si ya se está ocultando o en modo desarrollo */
+});
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { Asset } from "expo-asset";
 import AllButtons from "./screen/AllButtons";
@@ -24,7 +29,7 @@ import MasterCode from "./screen/MasterCode";
 import Multimedia from "./screen/Multimedia";
 import { getPanicAppByCode, registerNotificationToken } from "./util/Api";
 import { registerForPushNotificationsAsync } from "./util/Notifications";
-import * as Notifications from 'expo-notifications';
+// import * as Notifications from 'expo-notifications';
 import * as Updates from 'expo-updates';
 
 const Stack = createNativeStackNavigator();
@@ -32,7 +37,7 @@ const BottomTabs = createBottomTabNavigator();
 
 // 🔹 Función para obtener la clave de almacenamiento según el producto
 const getStorageKey = (product) => {
-  if (!product || product === "docta_panico") return "@licencias";
+  if (!product || product === "docta_panico" || product === "docta_legacy") return "@licencias";
   return `@licencias_${product}`;
 };
 
@@ -86,7 +91,7 @@ function EventModal({ visible, onClose, eventData }) {
 const UPDATE_INTERVAL_HOURS = 24; // Cambia a 0 para testing
 
 // Función de migración y actualización para usuarios existentes
-async function migrateExistingUsers(storedData) {
+async function migrateExistingUsers(storedData, product) {
   try {
     const parsedData = JSON.parse(storedData);
     
@@ -117,8 +122,9 @@ async function migrateExistingUsers(storedData) {
       lastPanicAppUpdate: new Date().toISOString() // Timestamp de última actualización
     };
     
-    await AsyncStorage.setItem("@licencias", JSON.stringify(updatedData));
-    console.log("Datos del panicApp actualizados exitosamente");
+    const specificKey = getStorageKey(product);
+    await AsyncStorage.setItem(specificKey, JSON.stringify(updatedData));
+    console.log(`Datos del panicApp actualizados exitosamente en ${specificKey}`);
     
   } catch (error) {
     console.error("Error durante la actualización:", error);
@@ -155,33 +161,49 @@ function shouldUpdatePanicAppData(parsedData) {
   return false;
 }
 
-function AuthorizedNavigation() {
+function AuthorizedNavigation({ activeProduct }) {
   const [logoUrl, setLogoUrl] = useState("https://i.imgur.com/aIYhRsN.png");
   const [headerBgColor, setHeaderBgColor] = useState("white");
   const [headerTxtColor, setHeaderTxtColor] = useState("Black");
   const [isMultimediaEnabled, setIsMultimediaEnabled] = useState(false);
+  const [activePanicId, setActivePanicId] = useState(null);
   const timerRef = useRef(null);
 
-  const activateMultimedia = () => {
+  const activateMultimedia = (serverResult) => {
+    // Si es un usuario Legacy (Desit Server), no habilitamos Multimedia
+    if (activeProduct === "docta_legacy") {
+      console.log("ℹ️ Multimedia no disponible para producto Legacy");
+      return;
+    }
+
+    // Si el servidor ya manda el ID (ej: result.id), lo guardamos. 
+    // Si no, queda como null por ahora.
+    const id = serverResult?.id || serverResult?.event_id || null;
+    console.log("🔔 Multimedia activada. ID de evento vinculado:", id);
+    
+    setActivePanicId(id);
     setIsMultimediaEnabled(true);
     if (timerRef.current) clearTimeout(timerRef.current);
     
     // Auto-cierre en 5 minutos
     timerRef.current = setTimeout(() => {
       setIsMultimediaEnabled(false);
+      setActivePanicId(null);
     }, 300000);
   };
 
   const deactivateMultimedia = () => {
     if (timerRef.current) clearTimeout(timerRef.current);
     setIsMultimediaEnabled(false);
+    setActivePanicId(null);
   };
 
   useEffect(() => {
     const loadPanicAppData = async () => {
       try {
-        const storedData = await AsyncStorage.getItem("@licencias");
-        console.log("📦 AuthorizedNavigation: Verificando AsyncStorage...");
+        const specificKey = getStorageKey(activeProduct);
+        const storedData = await AsyncStorage.getItem(specificKey);
+        console.log(`📦 AuthorizedNavigation (${activeProduct}): Verificando AsyncStorage en ${specificKey}...`);
         if (storedData) {
           const parsedData = JSON.parse(storedData);
           console.log("📦 panicAppData encontrado:", parsedData.panicAppData ? "SÍ" : "NO");
@@ -218,6 +240,7 @@ function AuthorizedNavigation() {
         headerTintColor: headerTxtColor,
         tabBarLabelStyle: { fontSize: 13, width: "100%", paddingBottom: 1 },
         headerTitleAlign: 'center',
+        tabBarHideOnKeyboard: true,
       }}
     >
       <BottomTabs.Screen
@@ -243,10 +266,18 @@ function AuthorizedNavigation() {
           },
         }}
       >
-        {(props) => <AllButtons {...props} onPanicSuccess={activateMultimedia} />}
+        {(props) => (
+          <AllButtons 
+            {...props} 
+            activeProduct={activeProduct}
+            onPanicSuccess={activateMultimedia} 
+            onPanicCancel={deactivateMultimedia} 
+          />
+        )}
       </BottomTabs.Screen>
 
-      {isMultimediaEnabled && (
+      {/* 📸 PESTAÑA MULTIMEDIA (Visible siempre para pruebas o por defecto) */}
+      {activeProduct !== "docta_legacy" && (
         <BottomTabs.Screen
           name="Multimedia"
           options={{
@@ -270,13 +301,18 @@ function AuthorizedNavigation() {
             },
           }}
         >
-          {(props) => <Multimedia {...props} onFinalize={deactivateMultimedia} />}
+          {(props) => (
+            <Multimedia 
+              {...props} 
+              panicId={activePanicId} 
+              onFinalize={deactivateMultimedia} 
+            />
+          )}
         </BottomTabs.Screen>
       )}
 
       <BottomTabs.Screen
         name="User"
-        component={User}
         options={{
           title: "",
           tabBarLabel: "Sistema",
@@ -297,25 +333,28 @@ function AuthorizedNavigation() {
             justifyContent: 'center',
           },
         }}
-      />
+      >
+        {(props) => <User {...props} activeProduct={activeProduct} />}
+      </BottomTabs.Screen>
     </BottomTabs.Navigator>
   );
 }
 
-function NoAuthorizedNavigation({ activeProduct, onAuthorized }) {
+function NoAuthorizedNavigation({ activeProduct, onAuthorized, activationData }) {
   const initialRoute = activeProduct === "docta_panico" ? "Configuration" : "Welcome";
   
   return (
-    <Stack.Navigator
+    <BottomTabs.Navigator
       initialRouteName={initialRoute}
       screenOptions={{
-        headerStyle: { backgroundColor: "#0F76C4", height: 100 },
+        headerStyle: { backgroundColor: "#0F76C4", height: 120 },
         headerTintColor: "black",
         headerTitleAlign: 'center',
+        tabBarStyle: { display: 'none' },
       }}
     >
       {/* Welcome sigue existiendo para otros productos o por si se necesita */}
-      <Stack.Screen
+      <BottomTabs.Screen
         name="Welcome"
         options={{
           headerShown: false,
@@ -328,19 +367,24 @@ function NoAuthorizedNavigation({ activeProduct, onAuthorized }) {
             onAuthorized={onAuthorized} 
           />
         )}
-      </Stack.Screen>
+      </BottomTabs.Screen>
 
-      <Stack.Screen
+      <BottomTabs.Screen
         name="Configuration"
+        options={{
+          headerTitle: "Configuración",
+        }}
       >
         {(props) => (
           <Configuration 
             {...props} 
-            onAuthorized={onAuthorized} 
+            activeProduct={activeProduct}
+            onAuthorized={onAuthorized}
+            initialData={activationData}
           />
         )}
-      </Stack.Screen>
-    </Stack.Navigator>
+      </BottomTabs.Screen>
+    </BottomTabs.Navigator>
   );
 }
 
@@ -348,19 +392,27 @@ function ProductSpecificNavigation({ onReset }) {
   const [productName, setProductName] = useState("Vigilantes");
   const [logoUrl, setLogoUrl] = useState("https://i.imgur.com/aIYhRsN.png");
   const [isMultimediaEnabled, setIsMultimediaEnabled] = useState(false);
+  const [activePanicId, setActivePanicId] = useState(null);
   const timerRef = useRef(null);
 
-  const activateMultimedia = () => {
+  const activateMultimedia = (serverResult) => {
+    // Para simulaciones, generamos un ID si no viene del servidor
+    const id = serverResult?.id || serverResult?.event_id || "SIM-" + Date.now();
+    console.log("🔔 Multimedia activada (Vigi). ID vinculado:", id);
+    
+    setActivePanicId(id);
     setIsMultimediaEnabled(true);
     if (timerRef.current) clearTimeout(timerRef.current);
     timerRef.current = setTimeout(() => {
       setIsMultimediaEnabled(false);
+      setActivePanicId(null);
     }, 300000); // 5 min
   };
 
   const deactivateMultimedia = () => {
     if (timerRef.current) clearTimeout(timerRef.current);
     setIsMultimediaEnabled(false);
+    setActivePanicId(null);
   };
 
   useEffect(() => {
@@ -428,9 +480,10 @@ function ProductSpecificNavigation({ onReset }) {
   return (
     <BottomTabs.Navigator
       screenOptions={{
-        headerStyle: { backgroundColor: 'white', height: 100 },
+        headerStyle: { backgroundColor: 'white', height: 120 },
         headerTintColor: '#222266',
         headerTitleAlign: 'center',
+        tabBarHideOnKeyboard: true,
       }}
     >
       <BottomTabs.Screen
@@ -464,22 +517,27 @@ function ProductSpecificNavigation({ onReset }) {
         )}
       </BottomTabs.Screen>
 
-      {isMultimediaEnabled && (
-        <BottomTabs.Screen
-          name="Multimedia"
-          options={{
-            title: "",
-            tabBarLabel: "Adjuntar",
-            tabBarIcon: ({ color, size }) => (
-              <Ionicons name="camera" size={size} color={color} />
-            ),
-            headerTitle: productName,
-            headerTitleStyle: { fontSize: 24, fontWeight: 'bold' }
-          }}
-        >
-          {(props) => <Multimedia {...props} onFinalize={deactivateMultimedia} />}
-        </BottomTabs.Screen>
-      )}
+      {/* 📸 PESTAÑA MULTIMEDIA (Visible siempre para pruebas) */}
+      <BottomTabs.Screen
+        name="Multimedia"
+        options={{
+          title: "",
+          tabBarLabel: "Adjuntar",
+          tabBarIcon: ({ color, size }) => (
+            <Ionicons name="camera" size={size} color={color} />
+          ),
+          headerTitle: productName,
+          headerTitleStyle: { fontSize: 24, fontWeight: 'bold' }
+        }}
+      >
+        {(props) => (
+          <Multimedia 
+            {...props} 
+            panicId={activePanicId} 
+            onFinalize={deactivateMultimedia} 
+          />
+        )}
+      </BottomTabs.Screen>
 
       <BottomTabs.Screen
         name="User"
@@ -536,6 +594,13 @@ function App() {
   const [isAuthorized, setIsAuthorized] = useState(false);
   const [hasMasterCode, setHasMasterCode] = useState(false);
   const [activeProduct, setActiveProduct] = useState(null);
+  const [activationData, setActivationData] = useState(null); // Nuevo: Datos del flujo maestro
+
+  const handleActivated = (product, extraData = null) => {
+    setActiveProduct(product);
+    setActivationData(extraData);
+    setHasMasterCode(true);
+  };
   const [expoPushToken, setExpoPushToken] = useState('');
   const [notification, setNotification] = useState(false);
   const [showEventModal, setShowEventModal] = useState(false);
@@ -632,8 +697,6 @@ function App() {
   useEffect(() => {
     async function prepare() {
       try {
-        await SplashScreen.preventAutoHideAsync();
-        
         // Precargar todos los assets locales (imágenes)
         console.log("🖼️ Precargando assets locales...");
         await Asset.loadAsync([
@@ -671,7 +734,7 @@ function App() {
           if (licenseData !== null) {
             setIsAuthorized(true);
             if (activeProd === "docta_panico") {
-              await migrateExistingUsers(licenseData);
+              await migrateExistingUsers(licenseData, activeProd);
             }
           }
         } else {
@@ -679,8 +742,8 @@ function App() {
           const legacyData = await AsyncStorage.getItem("@licencias");
           if (legacyData !== null) {
             setIsAuthorized(true);
-            setActiveProduct("docta_panico");
-            await migrateExistingUsers(legacyData);
+            setActiveProduct("docta_legacy"); // Identificado como Producto Legacy
+            await migrateExistingUsers(legacyData, "docta_legacy");
           } else {
             setHasMasterCode(false);
             setActiveProduct(null);
@@ -709,21 +772,25 @@ function App() {
     <>
       <StatusBar style="dark" />
       <NavigationContainer>
-        <Stack.Navigator>
+        <Stack.Navigator
+          screenOptions={{
+            headerStyle: { height: 120 },
+            headerTitleAlign: 'center',
+          }}
+        >
           {!isAuthorized ? (
             // FLUJO DE ACTIVACIÓN / CONFIGURACIÓN
             !hasMasterCode ? (
               <Stack.Screen 
                 name="MasterCode" 
-                options={{ headerShown: false }}
+                options={{ 
+                  headerShown: false,
+                }}
               >
                 {(props) => (
                   <MasterCode 
                     {...props} 
-                    onActivated={(product) => {
-                      setHasMasterCode(true);
-                      setActiveProduct(product);
-                    }} 
+                    onActivated={handleActivated} 
                   />
                 )}
               </Stack.Screen>
@@ -731,12 +798,15 @@ function App() {
               // Ya tiene código máster, todos van a la configuración (Welcome -> Configuration)
               <Stack.Screen
                 name="Secondary"
-                options={{ headerShown: false }}
+                options={{ 
+                  headerShown: false,
+                }}
               >
                 {(props) => (
                   <NoAuthorizedNavigation 
                     {...props} 
                     activeProduct={activeProduct}
+                    activationData={activationData}
                     onAuthorized={() => setIsAuthorized(true)}
                   />
                 )}
@@ -744,12 +814,13 @@ function App() {
             )
           ) : (
             // FLUJO DE APP ACTIVA
-            activeProduct === "docta_panico" ? (
+            (activeProduct === "docta_panico" || activeProduct === "docta_legacy") ? (
               <Stack.Screen
                 name="Principal"
-                component={AuthorizedNavigation}
                 options={{ headerShown: false }}
-              />
+              >
+                {(props) => <AuthorizedNavigation {...props} activeProduct={activeProduct} />}
+              </Stack.Screen>
             ) : (
               // Nueva navegación para otros productos (Vigilantes, Ciudadanos, etc.)
               <Stack.Screen 
@@ -779,7 +850,7 @@ function App() {
             options={{
               presentation: "modal",
               title: "Información del Sistema",
-              headerStyle: { backgroundColor: "#EB7F27", height: 150 },
+              headerStyle: { backgroundColor: "#EB7F27", height: 120 },
               headerTintColor: "white",
             }}
           />

@@ -9,17 +9,21 @@ import {
   Pressable,
   Animated,
   Platform,
+  Alert,
 } from "react-native";
 
 import { GlobalStyles } from "../constans/Colors";
 import { Ionicons } from "@expo/vector-icons";
-import { savePost } from "../util/Api";
+import { savePost, sendLocationDocta4 } from "../util/Api";
+import * as Location from "expo-location";
 import { LinearGradient } from "expo-linear-gradient";
 import SecondaryButton from "../component/SecondaryButton";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 
-const AllButtons = ({ onPanicSuccess }) => {
+const AllButtons = ({ onPanicSuccess, onPanicCancel, activeProduct }) => {
   const [showProgressBar, setShowProgressBar] = useState(false);
+  const [isPanicActive, setIsPanicActive] = useState(false);
+  const [lastPanicId, setLastPanicId] = useState(null);
   const animatedValue = useRef(new Animated.Value(0)).current;
   const startTimeRef = useRef(null);
   const screenWidth = Dimensions.get("window").width;
@@ -27,6 +31,12 @@ const AllButtons = ({ onPanicSuccess }) => {
   const [altoBox, setAltoBox] = useState(screenHeight / 4);
   const [anchBox, setAnchBox] = useState(screenHeight / 4);
   const [backgroundImage, setBackgroundImage] = useState("https://i.imgur.com/OGxH3he.png");
+
+  // Función para obtener la clave de almacenamiento según el producto (espejada de App.js)
+  const getStorageKey = (product) => {
+    if (!product || product === "docta_panico" || product === "docta_legacy") return "@licencias";
+    return `@licencias_${product}`;
+  };
   
   useEffect(() => {
     // Actualizar altoBox si la altura de la pantalla cambia
@@ -39,12 +49,13 @@ const AllButtons = ({ onPanicSuccess }) => {
     // Cargar imagen de fondo desde AsyncStorage
     const loadPanicAppData = async () => {
       try {
-        const storedData = await AsyncStorage.getItem("@licencias");
+        const specificKey = getStorageKey(activeProduct);
+        const storedData = await AsyncStorage.getItem(specificKey);
         if (storedData) {
           const parsedData = JSON.parse(storedData);
           if (parsedData.panicAppData?.backgroundUrl) {
             setBackgroundImage(parsedData.panicAppData.backgroundUrl);
-            console.log("Imagen de fondo cargada:", parsedData.panicAppData.backgroundUrl);
+            console.log(`Imagen de fondo cargada desde ${specificKey}:`, parsedData.panicAppData.backgroundUrl);
           }
         }
       } catch (error) {
@@ -52,7 +63,7 @@ const AllButtons = ({ onPanicSuccess }) => {
       }
     };
     loadPanicAppData();
-  }, []);
+  }, [activeProduct]);
 
   const handlePressIn = () => {
     setShowProgressBar(true);
@@ -65,10 +76,41 @@ const AllButtons = ({ onPanicSuccess }) => {
     }).start(({ finished }) => {
       if (finished) {
         // La barra de progreso se llenó
-        enviarEvento("ALARM");
+        if (isPanicActive) {
+          cancelarEvento();
+        } else {
+          enviarEvento("ALARM");
+        }
         setShowProgressBar(false);
       }
     });
+  };
+
+  const cancelarEvento = async () => {
+    Vibration.vibrate([100, 100, 100]); // Vibración triple para indicar cancelación
+    try {
+      // Intentamos enviar al servidor si hay un ID, pero no bloqueamos la UI si falla
+      if (lastPanicId) {
+        await savePost({
+          eventCode: "140", // Código de cancelación
+          relatedPanicId: lastPanicId,
+        });
+      }
+      console.log("Evento cancelado en servidor o modo simulación");
+    } catch (error) {
+      console.log("Error al cancelar en servidor (normal si no está implementado), reseteando UI localmente");
+    } finally {
+      // Siempre reseteamos la UI para poder seguir probando
+      setIsPanicActive(false);
+      setLastPanicId(null);
+      if (onPanicCancel) onPanicCancel();
+      
+      Alert.alert(
+        "Evento Cancelado",
+        "El aviso de pánico ha sido cancelado exitosamente.",
+        [{ text: "OK" }]
+      );
+    }
   };
 
   const handlePressOut = () => {
@@ -92,16 +134,44 @@ const AllButtons = ({ onPanicSuccess }) => {
   const enviarEvento = async (eventType) => {
     Vibration.vibrate(500);
     try {
+      // 1. Enviar el pánico inicial
       const result = await savePost({
         eventCode: "120",
       });
       console.log(`${eventType} enviado`, result);
       
-      // Activar modo multimedia si se envió con éxito
-      if (onPanicSuccess) onPanicSuccess();
+      const id = result?.id || result?.event_id || null;
+      setLastPanicId(id);
+      setIsPanicActive(true);
+
+      // 2. Activar multimedia
+      if (onPanicSuccess) onPanicSuccess(result);
+
+      // 3. Obtener y enviar ubicación precisa (Post-Pánico DOCTA 4)
+      if (id && activeProduct !== "docta_legacy") {
+        try {
+          const { status } = await Location.requestForegroundPermissionsAsync();
+          if (status === "granted") {
+            const location = await Location.getCurrentPositionAsync({
+              accuracy: Location.Accuracy.High,
+            });
+            
+            await sendLocationDocta4(id, {
+              lat: location.coords.latitude,
+              lng: location.coords.longitude,
+              accuracy: location.coords.accuracy,
+              timestamp: new Date().toISOString(),
+            });
+            console.log("Ubicación post-pánico enviada con éxito");
+          }
+        } catch (locError) {
+          console.warn("No se pudo enviar la ubicación post-pánico:", locError);
+        }
+      }
       
     } catch (error) {
       console.error(error);
+      Alert.alert("Error", "No se pudo establecer comunicación con el centro de monitoreo.");
     }
   };
 
@@ -187,7 +257,11 @@ const AllButtons = ({ onPanicSuccess }) => {
       <View style={[styles.buttonRow, { marginTop: altoBox / 20 }]}>
         <Pressable onPressIn={handlePressIn} onPressOut={handlePressOut}>
           <View style={styles.panicButtonWrapper}>
-            <View style={[styles.panicButton, { height: altoBox + 5 }]}>
+            <View style={[
+              styles.panicButton, 
+              { height: altoBox + 5 },
+              { backgroundColor: isPanicActive ? "#EB7F27" : GlobalStyles.colors.titlecolor }
+            ]}>
               {showProgressBar && (
                 <Animated.View 
                   style={[
@@ -207,8 +281,14 @@ const AllButtons = ({ onPanicSuccess }) => {
                 </Animated.View>
               )}
               <View style={styles.panicButtonContent}>
-                <Ionicons name="warning" size={60} color="white" />
-                <Text style={styles.textButton}>Pánico</Text>
+                <Ionicons 
+                  name={isPanicActive ? "close-circle" : "warning"} 
+                  size={60} 
+                  color="white" 
+                />
+                <Text style={styles.textButton}>
+                  {isPanicActive ? "CANCELAR EVENTO" : "Pánico"}
+                </Text>
               </View>
             </View>
           </View>
@@ -236,11 +316,11 @@ const styles = StyleSheet.create({
     width: deviceWidth * 0.42,
     borderRadius: 26,
     overflow: Platform.OS === "android" ? "hidden" : "visible",
-    elevation: 4,
-    shadowColor: "black",
-    shadowOpacity: 0.25,
-    shadowOffset: { width: 0, height: 2 },
-    shadowRadius: 8,
+    elevation: 8,
+    shadowColor: "#000",
+    shadowOpacity: 0.35,
+    shadowOffset: { width: 0, height: 4 },
+    shadowRadius: 6,
     alignItems: "center",
     justifyContent: "center",
   },
@@ -251,11 +331,11 @@ const styles = StyleSheet.create({
     height: 150,
     borderRadius: 26,
     overflow: Platform.OS === "android" ? "hidden" : "visible",
-    elevation: 4,
-    shadowColor: "black",
-    shadowOpacity: 0.25,
-    shadowOffset: { width: 0, height: 2 },
-    shadowRadius: 8,
+    elevation: 8,
+    shadowColor: "#000",
+    shadowOpacity: 0.35,
+    shadowOffset: { width: 0, height: 4 },
+    shadowRadius: 6,
     alignItems: "center",
     justifyContent: "center",
   },
@@ -279,13 +359,12 @@ const styles = StyleSheet.create({
     width: "100%",
     borderRadius: 26,
     overflow: "hidden",
-    backgroundColor: GlobalStyles.colors.titlecolor,
     opacity: 0.90,
-    elevation: 4,
-    shadowColor: "black",
-    shadowOpacity: 0.25,
-    shadowOffset: { width: 0, height: 2 },
-    shadowRadius: 14,
+    elevation: 10,
+    shadowColor: "#000",
+    shadowOpacity: 0.4,
+    shadowOffset: { width: 0, height: 6 },
+    shadowRadius: 10,
     alignItems: "center",
     justifyContent: "center",
   },

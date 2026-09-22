@@ -5,13 +5,14 @@ import {
   Text,
   TextInput,
   TouchableOpacity,
-  ScrollView,
+  FlatList,
   Alert,
   ActivityIndicator,
   KeyboardAvoidingView,
   Platform,
   Image,
   Animated,
+  ScrollView,
 } from "react-native";
 import { Ionicons, MaterialIcons } from "@expo/vector-icons";
 import * as ImagePicker from "expo-image-picker";
@@ -19,22 +20,92 @@ import {
   useAudioRecorder, 
   useAudioRecorderState, 
   requestRecordingPermissionsAsync,
-  useAudioPlayer 
+  useAudioPlayer,
+  useAudioPlayerStatus,
+  setAudioModeAsync
 } from "expo-audio";
 import AsyncStorage from "@react-native-async-storage/async-storage";
-import { savePost } from "../util/Api";
+import { 
+  savePost, 
+  sendChatMessage, 
+  fetchChatMessages, 
+  uploadChatAttachment, 
+  generateUUID 
+} from "../util/Api";
 
-function Multimedia({ onFinalize }) {
+// 🎵 Sub-componente para reproducir audios en el chat
+const AudioMessage = ({ uri, isMine }) => {
+  const player = useAudioPlayer(uri);
+  const status = useAudioPlayerStatus(player);
+
+  useEffect(() => {
+    player.loop = false; // Asegurar que no esté en bucle
+  }, [player]);
+
+  useEffect(() => {
+    if (status.didJustFinish) {
+      player.pause();
+      player.seekTo(0);
+    }
+  }, [status.didJustFinish]);
+
+  const handlePlayPause = async () => {
+    if (status.playing) {
+      player.pause();
+    } else {
+      // 🔊 Forzar salida por altavoz antes de reproducir
+      try {
+        await setAudioModeAsync({
+          allowsRecording: false,
+          playsInSilentMode: true,
+        });
+      } catch (e) {
+        console.warn("Error configurando audio para altavoz:", e);
+      }
+      player.play();
+    }
+  };
+
+  return (
+    <View style={styles.audioBubbleContent}>
+      <TouchableOpacity 
+        onPress={handlePlayPause}
+        style={styles.playButton}
+      >
+        <Ionicons name={status.playing ? "pause" : "play"} size={24} color="#222266" />
+      </TouchableOpacity>
+      <View style={styles.audioInfo}>
+        <View style={styles.waveformPlaceholder}>
+          <View style={[styles.waveformBar, { height: 10 }]} />
+          <View style={[styles.waveformBar, { height: 20 }]} />
+          <View style={[styles.waveformBar, { height: 15 }]} />
+          <View style={[styles.waveformBar, { height: 25 }]} />
+          <View style={[styles.waveformBar, { height: 10 }]} />
+        </View>
+        <Text style={styles.audioDuration}>
+          {status.playing ? "Reproduciendo..." : "Audio"}
+        </Text>
+      </View>
+      <Ionicons name="mic" size={20} color={isMine ? "#222266" : "#999"} style={{ marginLeft: 5 }} />
+    </View>
+  );
+};
+
+function Multimedia({ onFinalize, panicId }) {
   const [text, setText] = useState("");
   const [images, setImages] = useState([]);
-  const [loading, setLoading] = useState({ text: false, image: false, audio: false });
+  const [messages, setMessages] = useState([]);
+  const [lastSequence, setLastSequence] = useState(0);
+  const [loading, setLoading] = useState({ text: false, image: false, audio: false, messages: false });
   const [audioUri, setAudioUri] = useState(null);
   const [recordingStartTime, setRecordingStartTime] = useState(null);
   
   const recordingTimer = useRef(null);
+  const pollTimer = useRef(null);
+  const flatListRef = useRef(null);
   const waveformAnim = useRef(new Animated.Value(0)).current;
 
-  // Configuración manual del grabador de audio
+  // Configuración del grabador de audio
   const audioRecorder = useAudioRecorder({
     extension: '.m4a',
     sampleRate: 44100,
@@ -43,25 +114,15 @@ function Multimedia({ onFinalize }) {
   });
 
   const { isRecording } = useAudioRecorderState(audioRecorder);
-
-  // Reproductor para oír el audio grabado
   const player = useAudioPlayer(audioUri);
 
-  // Animación del espectro
+  // Animación del espectro de audio
   useEffect(() => {
     if (isRecording) {
       Animated.loop(
         Animated.sequence([
-          Animated.timing(waveformAnim, {
-            toValue: 1,
-            duration: 500,
-            useNativeDriver: true,
-          }),
-          Animated.timing(waveformAnim, {
-            toValue: 0,
-            duration: 500,
-            useNativeDriver: true,
-          }),
+          Animated.timing(waveformAnim, { toValue: 1, duration: 500, useNativeDriver: true }),
+          Animated.timing(waveformAnim, { toValue: 0, duration: 500, useNativeDriver: true }),
         ])
       ).start();
     } else {
@@ -69,31 +130,117 @@ function Multimedia({ onFinalize }) {
     }
   }, [isRecording]);
 
+  const lastSequenceRef = useRef(0);
+
+  // Actualizar la referencia cada vez que cambie el estado (para el polling)
   useEffect(() => {
+    lastSequenceRef.current = lastSequence;
+  }, [lastSequence]);
+
+  // Carga inicial y polling de mensajes
+  useEffect(() => {
+    loadInitialMessages();
+    startPolling();
     return () => {
       if (recordingTimer.current) clearTimeout(recordingTimer.current);
+      if (pollTimer.current) clearInterval(pollTimer.current);
     };
   }, []);
 
-  const handleSendText = async () => {
-    if (!text.trim()) {
-      Alert.alert("Error", "Por favor, escriba un mensaje.");
-      return;
-    }
-
-    setLoading(prev => ({ ...prev, text: true }));
+  const loadInitialMessages = async () => {
+    setLoading(prev => ({ ...prev, messages: true }));
     try {
-      await savePost({
-        eventCode: "130",
-        multimediaText: text.trim()
-      });
-      Alert.alert("Éxito", "Mensaje enviado correctamente.");
-      setText("");
+      const data = await fetchChatMessages(0);
+      if (data.mensajes) {
+        setMessages(data.mensajes);
+        setLastSequence(data.ultima_secuencia);
+      }
     } catch (error) {
-      console.error("Error al enviar texto multimedia:", error);
-      Alert.alert("Error", "No se pudo enviar el mensaje.");
+      console.error("Error al cargar mensajes iniciales:", error);
     } finally {
-      setLoading(prev => ({ ...prev, text: false }));
+      setLoading(prev => ({ ...prev, messages: false }));
+    }
+  };
+
+  const startPolling = () => {
+    pollTimer.current = setInterval(async () => {
+      try {
+        const data = await fetchChatMessages(lastSequenceRef.current);
+        if (data.mensajes && data.mensajes.length > 0) {
+          setMessages(prev => {
+            let updatedList = [...prev];
+            data.mensajes.forEach(nm => {
+              const index = updatedList.findIndex(pm => 
+                pm.client_message_id && pm.client_message_id === nm.client_message_id
+              );
+              
+              if (index !== -1) {
+                // Actualizamos el mensaje optimista con los datos reales del servidor
+                updatedList[index] = { ...updatedList[index], ...nm, loading: false };
+              } else if (!updatedList.some(pm => pm.secuencia === nm.secuencia)) {
+                // Es un mensaje nuevo (ej: del operador)
+                updatedList.push(nm);
+              }
+            });
+            // Ordenar siempre por secuencia para evitar desorden por retardos de red
+            return updatedList.sort((a, b) => (a.secuencia || 0) - (b.secuencia || 0));
+          });
+          setLastSequence(data.ultima_secuencia);
+        }
+      } catch (error) {
+        console.warn("Error en polling de chat:", error);
+      }
+    }, 5000); // Cada 5 segundos
+  };
+
+  const handleSend = async () => {
+    if (!text.trim() && images.length === 0 && !audioUri) return;
+
+    const messageId = generateUUID();
+    const tempText = text.trim();
+    const pendingImages = [...images];
+    const pendingAudio = audioUri;
+    
+    // Optimistic UI
+    const newMsg = {
+      client_message_id: messageId,
+      texto: tempText,
+      autor: "vecino",
+      recibido_utc: new Date().toISOString(),
+      loading: true,
+      adjunto: pendingAudio 
+        ? { tipo: "audio", url: pendingAudio } 
+        : (pendingImages.length > 0 ? { tipo: "imagen", url: pendingImages[0] } : null)
+    };
+
+    setMessages(prev => [...prev, newMsg]);
+    setText("");
+    setImages([]);
+    setAudioUri(null);
+
+    try {
+      let adjuntoId = null;
+
+      // 1. Subir primer adjunto si existe (la API actual parece soportar uno por mensaje)
+      if (pendingImages.length > 0) {
+        const uploadResult = await uploadChatAttachment(pendingImages[0], "imagen");
+        adjuntoId = uploadResult.adjunto_id;
+      } else if (pendingAudio) {
+        const uploadResult = await uploadChatAttachment(pendingAudio, "audio");
+        adjuntoId = uploadResult.adjunto_id;
+      }
+
+      // 2. Enviar mensaje de chat
+      await sendChatMessage({
+        texto: tempText || (adjuntoId ? "" : "..."),
+        client_message_id: messageId,
+        adjunto_id: adjuntoId
+      });
+      
+    } catch (error) {
+      console.error("Error al enviar mensaje:", error);
+      Alert.alert("Error", "No se pudo enviar el mensaje o los adjuntos.");
+      // Opcionalmente remover el mensaje optimista o marcarlo como error
     }
   };
 
@@ -117,6 +264,7 @@ function Multimedia({ onFinalize }) {
     if (!result.canceled) {
       const newUri = result.assets[0].uri;
       setImages(prev => [...prev, newUri]);
+      // En un flujo real, aquí subiríamos la foto y luego enviaríamos el mensaje de chat
     }
   };
 
@@ -132,34 +280,33 @@ function Multimedia({ onFinalize }) {
         return;
       }
 
+      // 🎙️ Configurar sesión para grabación
+      try {
+        await setAudioModeAsync({
+          allowsRecording: true,
+          playsInSilentMode: true,
+        });
+      } catch (e) {
+        console.warn("Error configurando audio para grabación:", e);
+      }
+
       setRecordingStartTime(Date.now());
       await audioRecorder.prepareToRecordAsync();
       audioRecorder.record();
 
       if (recordingTimer.current) clearTimeout(recordingTimer.current);
-      recordingTimer.current = setTimeout(() => {
-        stopRecording();
-      }, 60000);
-
+      recordingTimer.current = setTimeout(() => stopRecording(), 60000);
     } catch (err) {
       console.error("Failed to start recording", err);
-      Alert.alert("Error", "No se pudo iniciar la grabación.");
     }
   };
 
   const stopRecording = async () => {
     if (!isRecording) return;
-    
     const now = Date.now();
     const duration = now - (recordingStartTime || 0);
-
-    // FIX: Evitar el error de java.lang.RuntimeException: stop failed en Android
-    // si se detiene la grabación demasiado rápido (< 1 seg)
     if (duration < 1000) {
-      console.warn("Grabación demasiado corta, esperando...");
-      setTimeout(async () => {
-        await finalizeRecording();
-      }, 1000 - duration);
+      setTimeout(async () => await finalizeRecording(), 1000 - duration);
     } else {
       await finalizeRecording();
     }
@@ -169,239 +316,197 @@ function Multimedia({ onFinalize }) {
     setLoading(prev => ({ ...prev, audio: true }));
     try {
       await audioRecorder.stop();
-      const uri = audioRecorder.uri;
-      setAudioUri(uri);
-      console.log("Audio grabado en:", uri);
-      // No alertamos aquí para no interrumpir el flujo del usuario
+      setAudioUri(audioRecorder.uri);
     } catch (error) {
       console.error("Failed to stop recording", error);
     } finally {
       setLoading(prev => ({ ...prev, audio: false }));
       setRecordingStartTime(null);
-      if (recordingTimer.current) clearTimeout(recordingTimer.current);
     }
   };
 
-  const handleAudioAction = () => {
-    if (audioUri && !isRecording) {
-      if (player.playing) {
-        player.pause();
-      } else {
-        player.play();
+  const renderMessage = ({ item }) => {
+    const isMine = item.autor === "vecino";
+    
+    // Función para asegurar que la fecha se interprete como UTC
+    const getValidDate = (dateStr) => {
+      if (!dateStr) return new Date();
+      try {
+        let sanitized = dateStr;
+        // Si viene con espacio, lo cambiamos por T para formato ISO
+        sanitized = sanitized.replace(" ", "T");
+        // Si no tiene indicador de zona horaria (Z o +00:00), se lo agregamos como UTC
+        if (!sanitized.endsWith("Z") && !sanitized.includes("+") && sanitized.includes("T")) {
+          sanitized += "Z";
+        }
+        const d = new Date(sanitized);
+        return isNaN(d.getTime()) ? new Date() : d;
+      } catch (e) {
+        return new Date();
       }
-    }
-  };
+    };
 
-  const handleFinalize = async () => {
-    setLoading(prev => ({ ...prev, text: true }));
-    try {
-      console.log("Enviando reporte final:", { images, text, audioUri });
-      Alert.alert("Reporte Enviado", "Toda la información ha sido enviada con éxito.", [
-        { text: "OK", onPress: onFinalize }
-      ]);
-    } catch (error) {
-      Alert.alert("Error", "No se pudo finalizar el envío.");
-    } finally {
-      setLoading(prev => ({ ...prev, text: false }));
-    }
+    return (
+      <View style={[styles.messageBubble, isMine ? styles.myMessage : styles.opMessage]}>
+        {!isMine && <Text style={styles.authorName}>{item.autor_nombre || "Operador"}</Text>}
+        {item.texto && <Text style={[styles.messageText, isMine ? styles.myText : styles.opText]}>{item.texto}</Text>}
+        {item.adjunto && item.adjunto.tipo === "imagen" && (
+          <Image source={{ uri: item.adjunto.url }} style={styles.messageImage} resizeMode="cover" />
+        )}
+        {item.adjunto && item.adjunto.tipo === "audio" && (
+          <AudioMessage uri={item.adjunto.url} isMine={isMine} />
+        )}
+        <View style={styles.messageFooter}>
+          <Text style={styles.messageTime}>
+            {getValidDate(item.recibido_utc).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+          </Text>
+          {isMine && (
+            <Ionicons 
+              name={item.loading ? "time-outline" : "checkmark-done"} 
+              size={14} 
+              color={item.loading ? "#999" : "#34B7F1"} 
+              style={{ marginLeft: 5 }}
+            />
+          )}
+        </View>
+      </View>
+    );
   };
-
-  const RecordingWaveform = () => (
-    <View style={styles.waveformContainer}>
-      {[1, 2, 3, 4, 5].map((i) => (
-        <Animated.View
-          key={i}
-          style={[
-            styles.waveformBar,
-            {
-              transform: [{
-                scaleY: waveformAnim.interpolate({
-                  inputRange: [0, 1],
-                  outputRange: [1, 1 + (i * 0.5)]
-                })
-              }]
-            }
-          ]}
-        />
-      ))}
-    </View>
-  );
 
   return (
     <KeyboardAvoidingView 
-      behavior={Platform.OS === "ios" ? "padding" : "height"}
-      style={styles.container}
+      behavior={Platform.OS === "ios" ? "padding" : undefined}
+      style={{ flex: 1 }}
+      keyboardVerticalOffset={Platform.OS === "ios" ? 90 : 0}
     >
-      <ScrollView contentContainerStyle={styles.scrollContent}>
-        {images.length === 0 && !audioUri && (
-          <View style={styles.header}>
-            <View style={styles.emergencyBadge}>
-              <Ionicons name="warning" size={20} color="white" />
-              <Text style={styles.emergencyText}>EMERGENCIA ACTIVA</Text>
-            </View>
-            <Text style={styles.title}>Información Adicional</Text>
-          </View>
-        )}
-
-        {/* Ventana Superior de Galería (Preview) */}
-        {images.length > 0 && (
-          <View style={styles.previewContainer}>
-            <View style={styles.previewHeader}>
-              <Text style={styles.previewTitle}>Imágenes Capturadas ({images.length}/3)</Text>
-            </View>
-            <View style={styles.galleryRow}>
-              {images.map((uri, index) => (
-                <View key={index} style={styles.thumbnailWrapper}>
-                  <Image source={{ uri }} style={styles.thumbnail} />
-                  <TouchableOpacity 
-                    style={styles.deleteBadge}
-                    onPress={() => removeImage(index)}
-                  >
-                    <Ionicons name="close-circle" size={20} color="#E74C3C" />
-                  </TouchableOpacity>
-                </View>
-              ))}
-            </View>
-          </View>
-        )}
-
-        <View style={styles.card}>
-          <Text style={styles.cardTitle}>Mensaje de Texto</Text>
-          <TextInput
-            style={styles.textInput}
-            placeholder="Describa la situación..."
-            multiline
-            numberOfLines={4}
-            value={text}
-            onChangeText={setText}
-            placeholderTextColor="#999"
-          />
-          <TouchableOpacity 
-            style={[styles.sendButton, (!text.trim() || loading.text) && styles.buttonDisabled]}
-            onPress={handleSendText}
-            disabled={!text.trim() || loading.text}
-          >
-            {loading.text ? (
-              <ActivityIndicator color="white" />
-            ) : (
-              <>
-                <Text style={styles.buttonText}>ENVIAR TEXTO</Text>
-                <Ionicons name="send" size={18} color="white" style={{ marginLeft: 8 }} />
-              </>
-            )}
-          </TouchableOpacity>
+      <View style={styles.container}>
+      <View style={styles.header}>
+        <View style={styles.emergencyBadge}>
+          <Ionicons name="warning" size={16} color="white" />
+          <Text style={styles.emergencyText}>CANAL DE EMERGENCIA ACTIVO</Text>
         </View>
+      </View>
 
-        <View style={styles.row}>
-          <TouchableOpacity 
-            style={[styles.actionCard, (loading.image || images.length >= 3) && styles.cardDisabled]}
-            onPress={takePhoto}
-            disabled={loading.image || images.length >= 3}
-          >
-            {loading.image ? (
-              <ActivityIndicator color="#222266" />
-            ) : (
-              <>
-                <View style={[styles.iconCircle, { backgroundColor: "#E3F2FD" }]}>
-                  <MaterialIcons name="photo-camera" size={32} color="#1976D2" />
-                </View>
-                <Text style={styles.actionLabel}>
-                  {images.length >= 3 ? "LÍMITE ALCANZADO" : "TOMAR FOTO"}
-                </Text>
-                {images.length > 0 && images.length < 3 && (
-                  <Text style={styles.imageCount}>{images.length}/3 fotos</Text>
-                )}
-              </>
-            )}
-          </TouchableOpacity>
+      <FlatList
+        ref={flatListRef}
+        data={messages}
+        renderItem={renderMessage}
+        keyExtractor={(item, index) => item.secuencia?.toString() || item.client_message_id || index.toString()}
+        contentContainerStyle={styles.messageList}
+        onContentSizeChange={() => flatListRef.current?.scrollToEnd({ animated: true })}
+        onLayout={() => flatListRef.current?.scrollToEnd({ animated: true })}
+        ListEmptyComponent={
+          loading.messages ? (
+            <ActivityIndicator style={{ marginTop: 20 }} color="#222266" />
+          ) : (
+            <Text style={styles.emptyChatText}>Inicie el chat describiendo su situación...</Text>
+          )
+        }
+      />
 
-          <TouchableOpacity 
-            style={[styles.actionCard, isRecording && styles.cardRecording]}
-            onPress={handleAudioAction}
-            onLongPress={startRecording}
-            onPressOut={stopRecording}
-            delayLongPress={200}
-          >
-            {loading.audio ? (
-              <ActivityIndicator color="#222266" />
-            ) : (
-              <>
-                <View style={[
-                  styles.iconCircle, 
-                  isRecording ? { backgroundColor: "#FFEBEE" } : (audioUri ? { backgroundColor: "#E8F5E9" } : { backgroundColor: "#F3E5F5" })
-                ]}>
-                  <Ionicons 
-                    name={isRecording ? "stop-circle" : (audioUri ? (player.playing ? "pause" : "play") : "mic")} 
-                    size={32} 
-                    color={isRecording ? "#D32F2F" : (audioUri ? "#2E7D32" : "#7B1FA2")} 
-                  />
+      {/* Área de adjuntos pendientes */}
+      {(images.length > 0 || audioUri) && (
+        <View style={styles.pendingAttachments}>
+          <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+            {images.map((uri, index) => (
+              <View key={`img-${index}`} style={styles.thumbWrapper}>
+                <Image source={{ uri }} style={styles.thumb} />
+                <TouchableOpacity style={styles.removeThumb} onPress={() => removeImage(index)}>
+                  <Ionicons name="close-circle" size={20} color="#E74C3C" />
+                </TouchableOpacity>
+              </View>
+            ))}
+            {audioUri && (
+              <View style={styles.thumbWrapper}>
+                <View style={[styles.thumb, styles.audioThumb]}>
+                  <Ionicons name="mic" size={30} color="#222266" />
                 </View>
-                <Text style={[
-                  styles.actionLabel, 
-                  isRecording && { color: "#D32F2F" },
-                  audioUri && !isRecording && { color: "#2E7D32" }
-                ]}>
-                  {isRecording ? "GRABANDO..." : (audioUri ? "OÍR / RE-GRABAR" : "GRABAR AUDIO")}
-                </Text>
-                {isRecording && <RecordingWaveform />}
-                {!isRecording && audioUri && <Text style={styles.audioHint}>Mantenga para re-grabar</Text>}
-                {!isRecording && !audioUri && <Text style={styles.audioHint}>Mantenga para grabar</Text>}
-              </>
+                <TouchableOpacity style={styles.removeThumb} onPress={() => setAudioUri(null)}>
+                  <Ionicons name="close-circle" size={20} color="#E74C3C" />
+                </TouchableOpacity>
+              </View>
             )}
-          </TouchableOpacity>
+          </ScrollView>
         </View>
+      )}
 
-        <TouchableOpacity 
-          style={styles.finalizeButton}
-          onPress={handleFinalize}
-        >
-          <Text style={styles.finalizeButtonText}>ENVIAR Y FINALIZAR REPORTE</Text>
-          <Ionicons name="cloud-upload" size={20} color="#222266" style={{ marginLeft: 10 }} />
+      {/* Barra de entrada */}
+      <View style={styles.inputArea}>
+        <TouchableOpacity style={styles.iconBtn} onPress={takePhoto}>
+          <Ionicons name="camera" size={28} color="#222266" />
         </TouchableOpacity>
         
-        <Text style={styles.footerText}>La información será enviada a la central de monitoreo.</Text>
-      </ScrollView>
+        <TouchableOpacity style={styles.iconBtn} onPress={isRecording ? stopRecording : startRecording}>
+          <Ionicons name={isRecording ? "stop-circle" : "mic"} size={28} color={isRecording ? "#E74C3C" : "#222266"} />
+        </TouchableOpacity>
+
+        <TextInput
+          style={styles.input}
+          placeholder="Escriba un mensaje..."
+          value={text}
+          onChangeText={setText}
+          multiline
+        />
+
+        <TouchableOpacity 
+          style={[styles.sendBtn, (!text.trim() && images.length === 0 && !audioUri) && styles.sendBtnDisabled]} 
+          onPress={handleSend}
+          disabled={!text.trim() && images.length === 0 && !audioUri}
+        >
+          <Ionicons name="send" size={24} color="white" />
+        </TouchableOpacity>
+      </View>
+
+      <TouchableOpacity style={styles.finalizeBtn} onPress={onFinalize}>
+        <Text style={styles.finalizeBtnText}>FINALIZAR REPORTE</Text>
+      </TouchableOpacity>
+      </View>
     </KeyboardAvoidingView>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: "#F5F7FA" },
-  scrollContent: { padding: 20, paddingBottom: 40 },
-  header: { alignItems: "center", marginBottom: 20, marginTop: 10 },
-  emergencyBadge: { flexDirection: "row", alignItems: "center", backgroundColor: "#E74C3C", paddingHorizontal: 12, paddingVertical: 6, borderRadius: 20, marginBottom: 15 },
-  emergencyText: { color: "white", fontSize: 12, fontFamily: "open-sans-bold", marginLeft: 6 },
-  title: { fontSize: 24, fontFamily: "open-sans-bold", color: "#222266", textAlign: "center" },
+  container: { flex: 1, backgroundColor: "#F0F2F5" },
+  header: { padding: 10, alignItems: "center", backgroundColor: "white", borderBottomWidth: 1, borderBottomColor: "#DDD" },
+  emergencyBadge: { flexDirection: "row", alignItems: "center", backgroundColor: "#E74C3C", paddingHorizontal: 12, paddingVertical: 4, borderRadius: 15 },
+  emergencyText: { color: "white", fontSize: 10, fontFamily: "open-sans-bold", marginLeft: 5 },
   
-  previewContainer: { backgroundColor: "white", borderRadius: 15, padding: 15, marginBottom: 20, elevation: 4, shadowColor: "#000", shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.15, shadowRadius: 5 },
-  previewHeader: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 12 },
-  previewTitle: { fontSize: 14, fontFamily: "open-sans-bold", color: "#666" },
-  galleryRow: { flexDirection: "row", justifyContent: "flex-start" },
-  thumbnailWrapper: { marginRight: 15, position: "relative" },
-  thumbnail: { width: 80, height: 80, borderRadius: 10, borderWidth: 1, borderColor: "#DDD" },
-  deleteBadge: { position: "absolute", top: -8, right: -8, backgroundColor: "white", borderRadius: 10 },
+  messageList: { padding: 15, paddingBottom: 20 },
+  messageBubble: { maxWidth: "80%", padding: 10, borderRadius: 15, marginBottom: 10, elevation: 1 },
+  myMessage: { alignSelf: "flex-end", backgroundColor: "#DCF8C6", borderBottomRightRadius: 2 },
+  opMessage: { alignSelf: "flex-start", backgroundColor: "white", borderBottomLeftRadius: 2 },
+  authorName: { fontSize: 11, color: "#222266", fontWeight: "bold", marginBottom: 3 },
+  messageText: { fontSize: 16, color: "#333" },
+  myText: { color: "#000" },
+  opText: { color: "#333" },
+  messageImage: { width: 200, height: 150, borderRadius: 10, marginTop: 5 },
+  
+  // Estilos de Audio en el Chat
+  audioBubbleContent: { flexDirection: "row", alignItems: "center", padding: 5, minWidth: 150 },
+  playButton: { width: 40, height: 40, borderRadius: 20, backgroundColor: "rgba(34, 34, 102, 0.1)", justifyContent: "center", alignItems: "center" },
+  audioInfo: { flex: 1, marginLeft: 10 },
+  waveformPlaceholder: { flexDirection: "row", alignItems: "center", height: 30 },
+  waveformBar: { width: 3, backgroundColor: "#222266", marginHorizontal: 1, borderRadius: 2 },
+  audioDuration: { fontSize: 10, color: "#666" },
 
-  card: { backgroundColor: "white", borderRadius: 15, padding: 20, marginBottom: 20, elevation: 3, shadowColor: "#000", shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.1, shadowRadius: 4 },
-  cardTitle: { fontSize: 16, fontFamily: "open-sans-bold", color: "#222266", marginBottom: 15 },
-  textInput: { backgroundColor: "#F9FAFB", borderRadius: 10, padding: 15, fontSize: 16, fontFamily: "open-sans", color: "#333", borderWidth: 1, borderColor: "#E5E7EB", textAlignVertical: "top", minHeight: 100 },
-  sendButton: { backgroundColor: "#222266", flexDirection: "row", height: 50, borderRadius: 10, justifyContent: "center", alignItems: "center", marginTop: 15 },
-  buttonDisabled: { opacity: 0.6 },
-  buttonText: { color: "white", fontSize: 16, fontFamily: "open-sans-bold" },
-  row: { flexDirection: "row", justifyContent: "space-between", marginBottom: 25 },
-  actionCard: { backgroundColor: "white", width: "48%", borderRadius: 15, padding: 20, alignItems: "center", justifyContent: "center", elevation: 3, shadowColor: "#000", shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.1, shadowRadius: 4 },
-  cardDisabled: { opacity: 0.5 },
-  cardRecording: { borderColor: "#E74C3C", borderWidth: 1 },
-  iconCircle: { width: 60, height: 60, borderRadius: 30, justifyContent: "center", alignItems: "center", marginBottom: 12 },
-  actionLabel: { fontSize: 12, fontFamily: "open-sans-bold", color: "#222266", textAlign: "center" },
-  imageCount: { fontSize: 10, color: "#1976D2", marginTop: 4, fontFamily: "open-sans-bold" },
-  audioHint: { fontSize: 10, color: "#666", marginTop: 4 },
-  finalizeButton: { flexDirection: "row", borderWidth: 2, borderColor: "#222266", height: 55, borderRadius: 12, justifyContent: "center", alignItems: "center", marginTop: 10 },
-  finalizeButtonText: { color: "#222266", fontSize: 16, fontFamily: "open-sans-bold" },
-  footerText: { textAlign: "center", color: "#999", fontSize: 12, marginTop: 20, fontFamily: "open-sans" },
+  messageFooter: { flexDirection: "row", alignItems: "center", alignSelf: "flex-end", marginTop: 4 },
+  messageTime: { fontSize: 10, color: "#999" },
+  emptyChatText: { textAlign: "center", color: "#999", marginTop: 50, fontFamily: "open-sans" },
 
-  // Waveform Styles
-  waveformContainer: { flexDirection: "row", height: 20, alignItems: "center", marginTop: 10 },
-  waveformBar: { width: 3, height: 8, backgroundColor: "#E74C3C", marginHorizontal: 2, borderRadius: 2 },
+  inputArea: { flexDirection: "row", alignItems: "center", padding: 10, backgroundColor: "white", borderTopWidth: 1, borderTopColor: "#EEE" },
+  input: { flex: 1, backgroundColor: "#F0F2F5", borderRadius: 20, paddingHorizontal: 15, paddingVertical: 8, marginHorizontal: 10, maxHeight: 100, fontSize: 16 },
+  iconBtn: { padding: 5 },
+  sendBtn: { width: 44, height: 44, borderRadius: 22, backgroundColor: "#222266", justifyContent: "center", alignItems: "center" },
+  sendBtnDisabled: { backgroundColor: "#CCC" },
+
+  pendingAttachments: { backgroundColor: "white", padding: 10, borderTopWidth: 1, borderTopColor: "#EEE" },
+  thumbWrapper: { marginRight: 10, position: "relative" },
+  thumb: { width: 60, height: 60, borderRadius: 8 },
+  audioThumb: { backgroundColor: "#DCF8C6", justifyContent: "center", alignItems: "center" },
+  removeThumb: { position: "absolute", top: -5, right: -5, backgroundColor: "white", borderRadius: 10 },
+
+  finalizeBtn: { padding: 15, backgroundColor: "white", alignItems: "center", borderTopWidth: 1, borderTopColor: "#DDD" },
+  finalizeBtnText: { color: "#E74C3C", fontWeight: "bold", letterSpacing: 1 }
 });
 
 export default Multimedia;

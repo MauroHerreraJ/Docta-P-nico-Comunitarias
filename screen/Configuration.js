@@ -9,17 +9,21 @@ import {
   TouchableOpacity,
   Modal,
   ScrollView,
+  Alert,
 } from "react-native";
-import { useNavigation } from "@react-navigation/native";
+import { useNavigation, useRoute } from "@react-navigation/native";
 import { StyleSheet } from "react-native";
 import { useState, useEffect } from "react";
-import { postUserData, postToken, getPanicAppByCode, validateCredentials } from "../util/Api";
+import { postUserData, postToken, getPanicAppByCode, validateCredentials, registerDevice } from "../util/Api";
 import { registerForPushNotificationsAsync } from "../util/Notifications";
-import { MaterialIcons } from "@expo/vector-icons";
+import { MaterialIcons, Ionicons } from "@expo/vector-icons";
 import { Dimensions } from "react-native";
 import * as Sentry from "@sentry/react-native";
+import * as Device from 'expo-device';
 import SaveButton from "../component/SaveButton";
 import AsyncStorage from "@react-native-async-storage/async-storage";
+import { CameraView, useCameraPermissions } from 'expo-camera';
+import Constants from 'expo-constants';
 
 const TERMS_AND_CONDITIONS = {
   title: "Términos y condiciones de uso",
@@ -80,9 +84,17 @@ const TERMS_AND_CONDITIONS = {
   ]
 };
 
-function Configuration({ onAuthorized }) {
+function Configuration({ onAuthorized, activeProduct, initialData }) {
   const { width, height } = Dimensions.get("window");
   const navigation = useNavigation();
+  const route = useRoute();
+
+  // Función para obtener la clave de almacenamiento (espejada de App.js)
+  const getStorageKey = (product) => {
+    if (!product || product === "docta_panico" || product === "docta_legacy") return "@licencias";
+    return `@licencias_${product}`;
+  };
+
   const [licencias, setLicencias] = useState({
     panicAppCode: "",
     targetDeviceId: "",
@@ -99,10 +111,65 @@ function Configuration({ onAuthorized }) {
   const [isTermsAccepted, setIsTermsAccepted] = useState(false);
   const [isTermsModalVisible, setIsTermsModalVisible] = useState(false);
   const [panicAppData, setPanicAppData] = useState(null);
+  const [masterConfig, setMasterConfig] = useState(null);
+
+  // Efecto para procesar datos iniciales (Nuevo Flujo)
+  useEffect(() => {
+    const data = initialData || route.params;
+    if (data?.initialStep) {
+      const { initialStep, masterConfig: mConfig, panicAppData: pData } = data;
+      
+      setMasterConfig(mConfig);
+      setPanicAppData(pData);
+      
+      setLicencias(prev => ({
+        ...prev,
+        panicAppCode: mConfig.muniCode,
+        targetDeviceId: mConfig.equipment,
+        numberId: "auto"
+      }));
+      
+      setIsTermsAccepted(true);
+      setCurrentStep(initialStep);
+    }
+  }, [initialData, route.params]);
+
+  // Estados para el Scanner de QR con expo-camera
+  const [permission, requestPermission] = useCameraPermissions();
+  const [isScannerVisible, setIsScannerVisible] = useState(false);
+  const [scanned, setScanned] = useState(false);
+
   const screenWidth = Dimensions.get("window").width;
   const screenHeight = Dimensions.get("window").height;
 
   const altoBox = screenHeight / 100;
+
+  const handleBarCodeScanned = ({ type, data }) => {
+    if (scanned) return;
+    setScanned(true);
+    try {
+      const parsedData = JSON.parse(data);
+      // Validamos que el QR tenga los campos esperados (c: code, e: equipment, a: account)
+      if (parsedData.c && parsedData.e && parsedData.a) {
+        setLicencias(prev => ({
+          ...prev,
+          panicAppCode: String(parsedData.c).toUpperCase(),
+          targetDeviceId: String(parsedData.e),
+          numberId: String(parsedData.a)
+        }));
+        setIsScannerVisible(false);
+        Alert.alert("Éxito", "Datos cargados desde el código QR.");
+      } else {
+        Alert.alert("Error", "El código QR no tiene el formato de configuración correcto.");
+      }
+    } catch (error) {
+      console.error("Error al parsear QR:", error);
+      Alert.alert("Error", "No se pudo leer el código QR. Asegúrese de que sea un QR válido.");
+    } finally {
+      // Pequeño delay para permitir que se procese antes de habilitar el siguiente escaneo
+      setTimeout(() => setScanned(false), 2000);
+    }
+  };
   //console.log(altoBox);
 
   useEffect(() => {
@@ -187,11 +254,48 @@ console.log("¿Es accepted?:", result?.licenseCreated?.status === "accepted");
         const token = await postToken(dataToken);
         //console.log("Respuesta del segundo POST:", token);
 
+        const storageKey = getStorageKey(activeProduct);
         await AsyncStorage.setItem(
-          "@licencias",
+          storageKey,
           JSON.stringify({ result, token, panicAppData })
         );
-        console.log("Datos Guardados en AsyncStorage (incluyendo panicAppData)");
+        console.log(`Datos Guardados en AsyncStorage en ${storageKey} (incluyendo panicAppData)`);
+
+        // 🚀 REGISTRO EN DOCTA 4 (Si no es legacy)
+        if (activeProduct !== "docta_legacy") {
+          try {
+            console.log("🚀 Iniciando registro de dispositivo en DOCTA 4...");
+            
+            // Si el numberId es "auto", le decimos al servidor que asigne una libre
+            const finalAccountNumber = licencias.numberId === "auto" ? "auto" : String(licencias.numberId);
+            
+            const regData = {
+              licencia_code: codigoExtraido || licencias.panicAppCode,
+              municipality_id: panicAppData?.municipality?.id || "68ed14bacb9f182f98a06c28", 
+              account_number: finalAccountNumber,
+              target_device_id: String(licencias.targetDeviceId),
+              fcm_token: null,
+              plataforma: Platform.OS,
+              app_version: Constants.expoConfig?.version || "1.0.0",
+              modelo: `${Device.brand} ${Device.modelName}`,
+              vecino: {
+                Vecino: licencias.Vecino,
+                Telefono: licencias.Documento
+              }
+            };
+            
+            const regResult = await registerDevice(regData);
+            console.log("✅ Dispositivo registrado en DOCTA 4 exitosamente:", regResult);
+
+            // Si el servidor nos asignó una cuenta en el pool, actualizamos los datos locales
+            if (regResult.account_number) {
+              console.log(`📡 Cuenta asignada por pool: ${regResult.account_number}`);
+            }
+          } catch (regError) {
+            console.error("❌ Fallo el registro en DOCTA 4:", regError);
+            // No bloqueamos el flujo si el registro falla, pero lo logueamos
+          }
+        }
 
         /* 🚫 NOTIFICACIONES ANULADAS TEMPORALMENTE
         try {
@@ -281,7 +385,30 @@ console.log("¿Es accepted?:", result?.licenseCreated?.status === "accepted");
             <View style={styles.title}>
               <Text style={styles.titleText}>Ingrese las Credenciales</Text>
             </View>
+
             <View style={styles.imputContainer}>
+              {/* Botón de Escaneo QR */}
+              <TouchableOpacity 
+                style={styles.qrButton}
+                onPress={async () => {
+                  if (permission?.status === 'undetermined') {
+                    await requestPermission();
+                  } else if (permission?.granted) {
+                    setIsScannerVisible(true);
+                  } else {
+                    Alert.alert(
+                      "Permiso denegado", 
+                      "Se necesita acceso a la cámara para escanear el código QR. Por favor, habilítelo en la configuración de su dispositivo."
+                    );
+                  }
+                }}
+              >
+                <MaterialIcons name="qr-code-scanner" size={24} color="white" />
+                <Text style={styles.qrButtonText}>CONFIGURACIÓN RÁPIDA (QR)</Text>
+              </TouchableOpacity>
+
+              <Text style={styles.orText}>o ingrese los datos manualmente:</Text>
+
               <View>
                 <View style={styles.textContainer}>
                   <TextInput
@@ -535,6 +662,36 @@ console.log("¿Es accepted?:", result?.licenseCreated?.status === "accepted");
           </View>
         </View>
       </Modal>
+
+      {/* Modal del Scanner QR */}
+      <Modal
+        animationType="slide"
+        transparent={false}
+        visible={isScannerVisible}
+        onRequestClose={() => setIsScannerVisible(false)}
+      >
+        <View style={styles.scannerContainer}>
+          <CameraView
+            onBarcodeScanned={scanned ? undefined : handleBarCodeScanned}
+            barcodeScannerSettings={{
+              barcodeTypes: ["qr"],
+            }}
+            style={StyleSheet.absoluteFillObject}
+          />
+          <View style={styles.scannerOverlay}>
+            <View style={styles.scannerHeader}>
+              <TouchableOpacity 
+                style={styles.closeScannerButton}
+                onPress={() => setIsScannerVisible(false)}
+              >
+                <Ionicons name="close" size={32} color="white" />
+              </TouchableOpacity>
+            </View>
+            <View style={styles.scannerFocusFrame} />
+            <Text style={styles.scannerText}>Enfoque el código QR de configuración</Text>
+          </View>
+        </View>
+      </Modal>
     </>
   );
 }
@@ -735,5 +892,78 @@ const styles = StyleSheet.create({
     color: "white",
     fontSize: 16,
     fontFamily: "open-sans-bold",
+  },
+  // Estilos para el botón de QR y el Scanner
+  qrButton: {
+    backgroundColor: "#222266",
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    paddingVertical: 15,
+    borderRadius: 10,
+    marginBottom: 10,
+    elevation: 5,
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.25,
+    shadowRadius: 3.84,
+  },
+  qrButtonText: {
+    color: "white",
+    fontSize: 14,
+    fontFamily: "open-sans-bold",
+    marginLeft: 10,
+    letterSpacing: 1,
+  },
+  orText: {
+    textAlign: "center",
+    color: "#666",
+    fontSize: 12,
+    fontFamily: "open-sans",
+    marginBottom: 15,
+    marginTop: 5,
+  },
+  scannerContainer: {
+    flex: 1,
+    backgroundColor: "black",
+  },
+  scannerOverlay: {
+    flex: 1,
+    backgroundColor: "rgba(0,0,0,0.5)",
+    justifyContent: "space-between",
+    alignItems: "center",
+    paddingVertical: 50,
+  },
+  scannerHeader: {
+    width: "100%",
+    flexDirection: "row",
+    justifyContent: "flex-end",
+    paddingHorizontal: 20,
+  },
+  closeScannerButton: {
+    width: 50,
+    height: 50,
+    borderRadius: 25,
+    backgroundColor: "rgba(0,0,0,0.7)",
+    justifyContent: "center",
+    alignItems: "center",
+  },
+  scannerFocusFrame: {
+    width: 250,
+    height: 250,
+    borderWidth: 2,
+    borderColor: "#0F76C4",
+    backgroundColor: "transparent",
+    borderRadius: 20,
+  },
+  scannerText: {
+    color: "white",
+    fontSize: 16,
+    fontFamily: "open-sans-bold",
+    textAlign: "center",
+    backgroundColor: "rgba(0,0,0,0.7)",
+    paddingHorizontal: 20,
+    paddingVertical: 10,
+    borderRadius: 20,
   },
 });
