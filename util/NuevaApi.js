@@ -168,6 +168,61 @@ export async function getMyVigiladorProfile() {
   return data;
 }
 
+/** Asignación activa + asignaciones del servicio (objetivo) de hoy. */
+export async function getMisAsignacionesApp() {
+  const { data } = await api.get("/api/asignaciones/mias");
+  return data;
+}
+
+const APP_HEADERS = { "X-Client-Info": "vigicontrol-app" };
+
+/** Despachos (tareas) del vigilador: pendientes / activos / historial del día. */
+export async function getMisDespachosApp() {
+  const { data } = await api.get("/api/despachos/mios", {
+    headers: {
+      ...APP_HEADERS,
+      "Cache-Control": "no-cache",
+      Pragma: "no-cache",
+    },
+    params: { _t: Date.now() },
+  });
+  return data;
+}
+
+export async function getDespachoApp(id) {
+  const { data } = await api.get(`/api/despachos/${encodeURIComponent(id)}`, {
+    headers: APP_HEADERS,
+  });
+  return data;
+}
+
+export async function aceptarDespachoApp(id) {
+  const { data } = await api.post(
+    `/api/despachos/${encodeURIComponent(id)}/aceptar`,
+    {},
+    { headers: APP_HEADERS, params: { app: "1" } },
+  );
+  return data;
+}
+
+export async function llegadaDespachoApp(id) {
+  const { data } = await api.post(
+    `/api/despachos/${encodeURIComponent(id)}/llegada`,
+    {},
+    { headers: APP_HEADERS, params: { app: "1" } },
+  );
+  return data;
+}
+
+export async function partidaDespachoApp(id) {
+  const { data } = await api.post(
+    `/api/despachos/${encodeURIComponent(id)}/partida`,
+    {},
+    { headers: APP_HEADERS, params: { app: "1" } },
+  );
+  return data;
+}
+
 const STORAGE_SESSION = "@vigicontrol_session";
 
 export async function getStoredSession() {
@@ -286,6 +341,142 @@ export async function loginWithUser({ username, password, registerDeviceOnLogin 
 
   await saveSession(session);
   return session;
+}
+
+/** Confirmaciones de hombre vivo del turno. */
+export async function getMiHombreVivoApp() {
+  const { data } = await api.get("/api/hombre-vivo/mias", {
+    headers: APP_HEADERS,
+    params: { _t: Date.now() },
+  });
+  return data;
+}
+
+export async function marcarHombreVivoApp({
+  at,
+  clientId,
+  programaId,
+  lat,
+  lng,
+  accuracy,
+} = {}) {
+  const { data } = await api.post(
+    "/api/hombre-vivo/mias",
+    { at, clientId, programaId, lat, lng, accuracy },
+    { headers: APP_HEADERS },
+  );
+  return data;
+}
+
+/** Libro de novedades del turno del vigilador. */
+export async function getMisNovedadesApp() {
+  const { data } = await api.get("/api/novedades/mias", {
+    headers: APP_HEADERS,
+    params: { _t: Date.now() },
+  });
+  return data;
+}
+
+export async function getMisAccesosApp() {
+  const { data } = await api.get("/api/accesos/mias", {
+    headers: APP_HEADERS,
+    params: { _t: Date.now() },
+  });
+  return data;
+}
+
+export async function crearAccesoApp({
+  dni,
+  nombre,
+  apellido,
+  vehiculo,
+  patente,
+  motivo,
+  clientId,
+} = {}) {
+  const { data } = await api.post(
+    "/api/accesos/mias",
+    { dni, nombre, apellido, vehiculo, patente, motivo, clientId },
+    { headers: APP_HEADERS },
+  );
+  return data;
+}
+
+export async function crearNovedadApp({ texto, at, clientId } = {}) {
+  const { data } = await api.post(
+    "/api/novedades/mias",
+    { texto, at, clientId },
+    { headers: APP_HEADERS },
+  );
+  return data;
+}
+
+/** Rondas del turno del vigilador, con puntos y marcas. */
+export async function getMisRondasApp() {
+  const { data } = await api.get("/api/rondas/mias", {
+    headers: APP_HEADERS,
+    params: { _t: Date.now() },
+  });
+  return data;
+}
+
+export async function iniciarRondaApp(rondaId) {
+  const { data } = await api.post(
+    `/api/rondas/mias/${encodeURIComponent(rondaId)}/iniciar`,
+    {},
+    { headers: APP_HEADERS },
+  );
+  return data;
+}
+
+export async function marcarPuntoRondaApp({
+  rondaId,
+  puntoId,
+  lat,
+  lng,
+  accuracy,
+  at,
+  clientId,
+} = {}) {
+  const { data } = await api.post(
+    `/api/rondas/mias/${encodeURIComponent(rondaId)}/marcar`,
+    { puntoId, lat, lng, accuracy, at, clientId },
+    { headers: APP_HEADERS },
+  );
+  return data;
+}
+
+export async function cerrarRondaApp(rondaId) {
+  const { data } = await api.post(
+    `/api/rondas/mias/${encodeURIComponent(rondaId)}/cerrar`,
+    {},
+    { headers: APP_HEADERS },
+  );
+  return data;
+}
+
+/** Ping GPS de la app (primer plano y segundo plano). */
+export async function pingGeo(body = {}) {
+  const identity = await getDeviceIdentity();
+  const { data } = await api.post(
+    "/api/geo/ping",
+    {
+      ...body,
+      deviceId: body.deviceId || identity.deviceId,
+      source: body.source || "app",
+    },
+    {
+      headers: {
+        "X-Client-Info": "vigicontrol-app",
+        "X-Device-Id": identity.deviceId || "",
+        "X-Device-Platform": identity.platform || "",
+        "X-Device-Brand": identity.brand || "",
+        "X-Device-Model": identity.modelName || "",
+        "X-Device-Source": identity.source || "geo-ping",
+      },
+    },
+  );
+  return data;
 }
 
 api.interceptors.request.use(async (config) => {

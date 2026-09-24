@@ -19,6 +19,14 @@ allprojects {
     mavenCentral()
     maven { url 'https://www.jitpack.io' }
   }
+
+  // Pin BouncyCastle: evita rango [1.81,1.82) que fuerza listar maven-metadata.xml
+  configurations.all {
+    resolutionStrategy {
+      force 'org.bouncycastle:bcprov-jdk15to18:1.81'
+      force 'org.bouncycastle:bcutil-jdk15to18:1.81'
+    }
+  }
 }
 
 apply plugin: "expo-root-project"

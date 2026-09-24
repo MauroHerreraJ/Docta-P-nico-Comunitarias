@@ -53,6 +53,19 @@
           }
         }
       ],
+      [
+        "expo-location",
+        {
+          locationAlwaysAndWhenInUsePermission:
+            "Vigicontrol usa tu ubicación durante el servicio, incluso con la app en segundo plano, para enviar la posición a la central. Se detiene al cerrar sesión.",
+          locationWhenInUsePermission:
+            "Vigicontrol usa tu ubicación durante el servicio para enviar la posición a la central.",
+          isIosBackgroundLocationEnabled: true,
+          isAndroidBackgroundLocationEnabled: true,
+          isAndroidForegroundServiceEnabled: true,
+        }
+      ],
+      "expo-task-manager",
       "expo-audio",
       "@sentry/react-native",
       "expo-status-bar",
@@ -69,13 +82,25 @@
       "buildNumber": "2",
       "infoPlist": {
         "ITSAppUsesNonExemptEncryption": false,
-        "NSFaceIDUsageDescription": "Vigicontrol usa Face ID para desbloquear tu usuario en el ingreso."
+        "NSFaceIDUsageDescription": "Vigicontrol usa Face ID para desbloquear tu usuario en el ingreso.",
+        "NSLocationWhenInUseUsageDescription": "Vigicontrol usa tu ubicación durante el servicio para enviar la posición a la central.",
+        "NSLocationAlwaysAndWhenInUseUsageDescription": "Vigicontrol usa tu ubicación durante el servicio, incluso en segundo plano, para enviar la posición a la central. Se detiene al cerrar sesión.",
+        "NSLocationAlwaysUsageDescription": "Vigicontrol usa tu ubicación durante el servicio, incluso en segundo plano, para enviar la posición a la central. Se detiene al cerrar sesión.",
+        "UIBackgroundModes": ["location"]
       }
     },
     "android": {
       "package": "com.pedrodarrigo.DesitAppV33",
       "versionCode": 3,
       "googleServicesFile": "./google-services.json",
+      "permissions": [
+        "ACCESS_COARSE_LOCATION",
+        "ACCESS_FINE_LOCATION",
+        "ACCESS_BACKGROUND_LOCATION",
+        "FOREGROUND_SERVICE",
+        "FOREGROUND_SERVICE_LOCATION",
+        "POST_NOTIFICATIONS"
+      ],
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
         "backgroundColor": "#0066CC"

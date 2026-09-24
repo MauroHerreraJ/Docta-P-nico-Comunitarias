@@ -24,7 +24,16 @@ import Welcome from "./screen/Welcome";
 import MasterCode from "./screen/MasterCode";
 import Multimedia from "./screen/Multimedia";
 import HomeVigi from "./screen/Vigicontrol/HomeVigi";
+import AsignacionesIngreso from "./screen/Vigicontrol/AsignacionesIngreso";
 import LoginVigi from "./screen/Vigicontrol/LoginVigi";
+import AsignacionesPendientes from "./screen/Vigicontrol/AsignacionesPendientes";
+import AsignacionDetalle from "./screen/Vigicontrol/AsignacionDetalle";
+import RondasTurno from "./screen/Vigicontrol/RondasTurno";
+import RondaRecorrido from "./screen/Vigicontrol/RondaRecorrido";
+import NovedadesTurno from "./screen/Vigicontrol/NovedadesTurno";
+import HombreVivoTurno from "./screen/Vigicontrol/HombreVivoTurno";
+import AccesosTurno from "./screen/Vigicontrol/AccesosTurno";
+import HombreVivoAlerta from "./screen/Vigicontrol/HombreVivoAlerta";
 import { getPanicAppByCode, registerNotificationToken } from "./util/Api";
 import {
   getDeviceIdentity,
@@ -32,12 +41,109 @@ import {
   getStoredSession,
   clearSession,
 } from "./util/NuevaApi";
+import { startGeoTracking, stopGeoTracking } from "./util/GeoTracker";
+import { clearEnrollment } from "./util/BiometricAuth";
 import { registerForPushNotificationsAsync } from "./util/Notifications";
 import * as Notifications from 'expo-notifications';
 import * as Updates from 'expo-updates';
 
 const Stack = createNativeStackNavigator();
 const BottomTabs = createBottomTabNavigator();
+const VigiHomeStack = createNativeStackNavigator();
+
+function VigiHomeNavigator({ onActivateMultimedia, onSalirServicio, productName }) {
+  const [entradaOk, setEntradaOk] = useState(false);
+  if (!entradaOk) {
+    return (
+      <AsignacionesIngreso
+        onAceptar={() => setEntradaOk(true)}
+        onSalir={onSalirServicio}
+      />
+    );
+  }
+  return (
+    <View style={{ flex: 1 }}>
+    <VigiHomeStack.Navigator>
+      <VigiHomeStack.Screen
+        name="HomeVigiMain"
+        options={{ headerShown: false }}
+      >
+        {() => (
+          <HomeVigi
+            onActivateMultimedia={onActivateMultimedia}
+            onSalirServicio={onSalirServicio}
+            productName={productName}
+          />
+        )}
+      </VigiHomeStack.Screen>
+      <VigiHomeStack.Screen
+        name="AsignacionesPendientes"
+        component={AsignacionesPendientes}
+        options={{
+          title: "Asignaciones",
+          headerTintColor: "#222266",
+          headerTitleStyle: { fontWeight: "700" },
+        }}
+      />
+      <VigiHomeStack.Screen
+        name="AsignacionDetalle"
+        component={AsignacionDetalle}
+        options={{
+          title: "Detalle",
+          headerTintColor: "#222266",
+          headerTitleStyle: { fontWeight: "700" },
+        }}
+      />
+      <VigiHomeStack.Screen
+        name="RondasTurno"
+        component={RondasTurno}
+        options={{
+          title: "Rondas",
+          headerTintColor: "#222266",
+          headerTitleStyle: { fontWeight: "700" },
+        }}
+      />
+      <VigiHomeStack.Screen
+        name="RondaRecorrido"
+        component={RondaRecorrido}
+        options={{
+          title: "Recorrido",
+          headerTintColor: "#222266",
+          headerTitleStyle: { fontWeight: "700" },
+        }}
+      />
+      <VigiHomeStack.Screen
+        name="NovedadesTurno"
+        component={NovedadesTurno}
+        options={{
+          title: "Novedades",
+          headerTintColor: "#222266",
+          headerTitleStyle: { fontWeight: "700" },
+        }}
+      />
+      <VigiHomeStack.Screen
+        name="AccesosTurno"
+        component={AccesosTurno}
+        options={{
+          title: "Accesos",
+          headerTintColor: "#222266",
+          headerTitleStyle: { fontWeight: "700" },
+        }}
+      />
+      <VigiHomeStack.Screen
+        name="HombreVivoTurno"
+        component={HombreVivoTurno}
+        options={{
+          title: "Hombre vivo",
+          headerTintColor: "#222266",
+          headerTitleStyle: { fontWeight: "700" },
+        }}
+      />
+    </VigiHomeStack.Navigator>
+    <HombreVivoAlerta />
+    </View>
+  );
+}
 
 // 🔹 Función para obtener la clave de almacenamiento según el producto
 const getStorageKey = (product) => {
@@ -486,6 +592,18 @@ function ProductSpecificNavigation({ onReset, activeProduct }) {
     };
   }, []);
 
+  useEffect(() => {
+    if (!sessionReady) return undefined;
+    if (session?.token) {
+      startGeoTracking().catch((err) =>
+        console.warn("[geo] start:", err?.message || err),
+      );
+    } else {
+      stopGeoTracking().catch(() => {});
+    }
+    return undefined;
+  }, [sessionReady, session]);
+
   const registerThisDevice = async () => {
     setRegisteringDevice(true);
     try {
@@ -513,6 +631,7 @@ function ProductSpecificNavigation({ onReset, activeProduct }) {
   };
 
   const logoutSession = async () => {
+    await stopGeoTracking();
     await clearSession();
     setSession(null);
   };
@@ -525,6 +644,7 @@ function ProductSpecificNavigation({ onReset, activeProduct }) {
         onPress: async () => {
           onReset(false);
 
+          await stopGeoTracking();
           await clearSession();
           setSession(null);
           await removeProductLicense(productKey || productName.toLowerCase());
@@ -548,8 +668,12 @@ function ProductSpecificNavigation({ onReset, activeProduct }) {
         onPress: async () => {
           onReset(true);
 
+          await stopGeoTracking();
           await clearSession();
           setSession(null);
+          await clearEnrollment().catch((e) =>
+            console.warn("[bio] clearEnrollment:", e?.message || e),
+          );
           await removeProductLicense(productKey || productName.toLowerCase());
           await AsyncStorage.removeItem("@master_config");
           await AsyncStorage.removeItem("@master_token");
@@ -606,8 +730,9 @@ function ProductSpecificNavigation({ onReset, activeProduct }) {
       >
         {() =>
           isVigiProduct(productKey) ? (
-            <HomeVigi
+            <VigiHomeNavigator
               onActivateMultimedia={activateMultimedia}
+              onSalirServicio={logoutSession}
               productName={productName}
             />
           ) : (
