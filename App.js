@@ -13,7 +13,12 @@ import { Ionicons } from "@expo/vector-icons";
 import { Image, Modal, View, Text, TouchableOpacity, StyleSheet } from "react-native";
 import { useFonts } from "expo-font";
 import * as SplashScreen from "expo-splash-screen";
-import { useEffect, useState } from "react";
+import { useEffect, useState, useRef } from "react";
+
+// Mantener el Splash Screen visible mientras se cargan los recursos
+SplashScreen.preventAutoHideAsync().catch(() => {
+  /* Ignorar errores si ya se está ocultando o en modo desarrollo */
+});
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { Asset } from "expo-asset";
 import AllButtons from "./screen/AllButtons";
@@ -289,12 +294,21 @@ function App() {
 
   const [appIsReady, setAppIsReady] = useState(false);
   const [isAuthorized, setIsAuthorized] = useState(false);
+  const [myLicenseCode, setMyLicenseCode] = useState(null);
+  const [myVecinoName, setMyVecinoName] = useState(null);
+  const myLicenseCodeRef = useRef(null);
+  const myVecinoNameRef = useRef(null);
   const [expoPushToken, setExpoPushToken] = useState('');
+
+  useEffect(() => {
+    myLicenseCodeRef.current = myLicenseCode;
+    myVecinoNameRef.current = myVecinoName;
+  }, [myLicenseCode, myVecinoName]);
+
   const [notification, setNotification] = useState(false);
   const [showEventModal, setShowEventModal] = useState(false);
   const [eventData, setEventData] = useState(null);
 
-  /* 🚫 NOTIFICACIONES ANULADAS TEMPORALMENTE
   useEffect(() => {
     // Función para normalizar y mostrar los datos de la notificación
     const handleEventNotification = (content) => {
@@ -302,13 +316,56 @@ function App() {
       
       console.log("Procesando contenido de notificación:", content);
       
-      // Usamos el cuerpo (body) que envía el servidor directamente
-      const body = content.body || "La alarma de su zona se ha activado.";
+      const data = content.data || {};
+      const eventCode = String(data.eventCode || data.code || "");
+      const triggerUser = data.alias || data.triggerUserName || "Un vecino";
+      const triggerCode = data.triggerLicenseCode || "";
+
+      // Comprobar si el que presionó es el usuario actual
+      const isMe = (triggerCode && triggerCode === myLicenseCodeRef.current) || 
+                   (triggerUser === myVecinoNameRef.current);
+      
+      // Depuración rápida para ver qué llega exactamente
+      // Alert.alert("Notificación Recibida", JSON.stringify(content));
+      
+      // Lógica de negocio según eventCode (Thunder Server)
+      // 120: Alarma, 104: Desactivación, 121: Emergencia
+      
+      if (eventCode === "104") {
+        // Desactivación de alarma
+        const isTimeout = data.source === "TIMEOUT";
+        setEventData({
+          title: "Alarma Desactivada",
+          body: isTimeout ? "La alarma se apagó automáticamente por tiempo." : "La alarma ha sido desactivada manualmente.",
+          type: 'info'
+        });
+        // Si queremos cerrar el modal automáticamente después de unos segundos
+        setTimeout(() => setShowEventModal(false), 5000);
+        return;
+      }
+
+      let title = "!Alarma Activada!";
+      let body = "";
+
+      if (isMe) {
+        // Mensaje para el usuario que presionó el botón
+        title = "¡Alarma Activada!";
+        body = "La alarma ha sonado exitosamente en la calle.";
+      } else {
+        // Mensaje para los vecinos
+        if (eventCode === "121") {
+          title = "🚨 AYUDA INMEDIATA 🚨";
+          body = `${triggerUser} necesita ayuda urgente.`;
+        } else {
+          title = eventCode === "120" ? "🚨 ALARMA CRÍTICA 🚨" : "!Alarma Activada!";
+          body = content.body || `${triggerUser} ha activado la alarma.`;
+        }
+      }
 
       setEventData({
-        title: "!Alarma Activada!",
+        title: title,
         body: body,
-        data: content.data || {}
+        data: data
       });
       setShowEventModal(true);
     };
@@ -352,7 +409,7 @@ function App() {
     const responseListener = Notifications.addNotificationResponseReceivedListener(response => {
       console.log("Notificación tocada:", response);
       if (response && response.notification) {
-        handleEventNotification(notification.request.content);
+        handleEventNotification(response.notification.request.content);
       }
     });
 
@@ -366,7 +423,7 @@ function App() {
           const licenseCode = parsedData.result?.licenseCreated?.code;
           if (licenseCode) {
             await registerNotificationToken(licenseCode, token);
-            console.log("Token refrescado y registrado exitosamente");
+            console.log("Token refrescado y registrado exitosamente en Thunder");
           }
         }
       } catch (error) {
@@ -380,12 +437,11 @@ function App() {
       pushTokenListener.remove();
     };
   }, []);
-  */
 
   useEffect(() => {
     async function prepare() {
       try {
-        await SplashScreen.preventAutoHideAsync();
+        // SPLASH SCREEN YA PREVENIDO ARRIBA
         
         // Precargar todos los assets locales (imágenes)
         console.log("🖼️ Precargando assets locales...");
@@ -410,6 +466,18 @@ function App() {
         const data = await AsyncStorage.getItem("@licencias");
         if (data !== null) {
           setIsAuthorized(true); // Usuario ya configurado
+          
+          const parsedData = JSON.parse(data);
+          
+          // Extraer información del usuario actual para comparar en notificaciones
+          const code = parsedData.result?.licenseCreated?.code;
+          if (code) setMyLicenseCode(code);
+          
+          const userFields = parsedData.result?.licenseCreated?.userCustomFields || [];
+          const vecinoObj = userFields.find(field => field.hasOwnProperty('Vecino'));
+          if (vecinoObj) {
+            setMyVecinoName(vecinoObj.Vecino);
+          }
           
           // Migración automática para usuarios existentes
           await migrateExistingUsers(data);
