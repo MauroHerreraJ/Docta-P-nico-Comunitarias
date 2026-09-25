@@ -27,7 +27,7 @@ import User from "./screen/User";
 import Welcome from "./screen/Welcome";
 import MasterCode from "./screen/MasterCode";
 import Multimedia from "./screen/Multimedia";
-import { getPanicAppByCode, registerNotificationToken } from "./util/Api";
+import { getPanicAppByCode, registerNotificationToken, onUnauthorized } from "./util/Api";
 import { registerForPushNotificationsAsync } from "./util/Notifications";
 // import * as Notifications from 'expo-notifications';
 import * as Updates from 'expo-updates';
@@ -695,6 +695,14 @@ function App() {
   */
 
   useEffect(() => {
+    // Suscribirse a errores de autenticación (401)
+    onUnauthorized(() => {
+      console.log("⚠️ App detectó 401: Redirigiendo a configuración...");
+      setIsAuthorized(false);
+      // No reseteamos hasMasterCode porque el equipo sigue siendo el mismo, 
+      // solo se invalidó el token del dispositivo.
+    });
+
     async function prepare() {
       try {
         // Precargar todos los assets locales (imágenes)

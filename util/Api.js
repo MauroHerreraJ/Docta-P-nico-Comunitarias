@@ -17,6 +17,33 @@ const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 // 🔹 Clave de la App (Proporcionada por DOCTA 4)
 const X_DOCTA_APP_KEY = "SA7UMkePJLYwZuY34lc2qUaopm7POcXlJLUNyBjq"; 
 
+// 🔹 Manejo de errores de autenticación
+let unauthorizedCallback = null;
+
+export const onUnauthorized = (callback) => {
+  unauthorizedCallback = callback;
+};
+
+// Interceptor de Axios para manejar 401 globalmente
+axios.interceptors.response.use(
+  (response) => response,
+  async (error) => {
+    if (error.response?.status === 401) {
+      console.log("🔴 Sesión expirada o token inválido (401).");
+      
+      // Limpiar tokens
+      await AsyncStorage.removeItem("@device_token");
+      await AsyncStorage.removeItem("@master_token");
+      
+      // Notificar a la app si hay un callback registrado
+      if (unauthorizedCallback) {
+        unauthorizedCallback();
+      }
+    }
+    return Promise.reject(error);
+  }
+);
+
 /**
  * Genera un UUID v4 simple para idempotencia.
  */
@@ -61,6 +88,8 @@ const getEndpoints = async () => {
 
   if (isDocta4) {
     return {
+      onboardingLookup: `${baseUrl}/modulo/onboarding/lookup`,
+      onboardingRegister: `${baseUrl}/modulo/onboarding/register`,
       register: `${baseUrl}/modulo/dispositivos`,
       status: `${baseUrl}/modulo/dispositivos/yo`,
       fcm: `${baseUrl}/modulo/dispositivos/fcm`,
@@ -106,6 +135,50 @@ const getAuthToken = async () => {
 // ==========================================
 // 🚀 FUNCIONES DOCTA 4 (SISTEMA NUEVO)
 // ==========================================
+
+/**
+ * Validar el código de 7 dígitos (Sección 1b.1)
+ */
+export const lookupOnboardingCode = async (code) => {
+  try {
+    const api = await getEndpoints();
+    const response = await axios.post(api.onboardingLookup, { code }, {
+      headers: { "Content-Type": "application/json" }
+    });
+    return response.data;
+  } catch (error) {
+    console.error("Error en lookup de onboarding:", error);
+    throw error;
+  }
+};
+
+/**
+ * Registrar y crear la licencia (Sección 1b.2)
+ */
+export const registerOnboarding = async (onboardingData) => {
+  try {
+    const api = await getEndpoints();
+    const response = await axios.post(api.onboardingRegister, onboardingData, {
+      headers: { "Content-Type": "application/json" }
+    });
+    
+    // Guardar el token de dispositivo y datos del municipio
+    if (response.data?.accessToken) {
+      await AsyncStorage.setItem("@device_token", response.data.accessToken);
+      await AsyncStorage.setItem("@device_id", String(response.data.dispositivo_id));
+      await AsyncStorage.setItem("@master_config", JSON.stringify({
+        apiUrl: DOCTA4_BASE_URL,
+        product: "docta_comunitarias",
+        municipality: response.data.municipality
+      }));
+    }
+    
+    return response.data;
+  } catch (error) {
+    console.error("Error en registro de onboarding:", error);
+    throw error;
+  }
+};
 
 /**
  * Registra el dispositivo en DOCTA 4 para obtener un token propio.
@@ -177,13 +250,14 @@ export const sendPanicDocta4 = async (eventData) => {
       if (storedLicencia) {
         const parsed = JSON.parse(storedLicencia);
         if (Object.keys(user).length === 0) {
+          // Intentar obtener datos del perfil de DOCTA 4 primero
           user = {
-            Vecino: parsed.result?.licenseCreated?.Vecino || "Usuario Docta",
-            Telefono: parsed.result?.licenseCreated?.Documento || ""
+            Vecino: parsed.result?.licenseCreated?.Vecino || parsed.profile?.Nombre || "Usuario Docta",
+            Telefono: parsed.result?.licenseCreated?.Documento || parsed.profile?.Teléfono || ""
           };
         }
         if (Object.keys(municipality).length === 0) {
-          municipality = parsed.panicAppData?.municipality || { id: "68ed14bacb9f182f98a06c28", name: "Default" };
+          municipality = parsed.panicAppData?.municipality || parsed.municipality || { id: "68ed14bacb9f182f98a06c28", name: "Default" };
         }
       }
     }

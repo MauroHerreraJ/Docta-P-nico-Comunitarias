@@ -14,7 +14,7 @@ import {
 import { useNavigation, useRoute } from "@react-navigation/native";
 import { StyleSheet } from "react-native";
 import { useState, useEffect } from "react";
-import { postUserData, postToken, getPanicAppByCode, validateCredentials, registerDevice } from "../util/Api";
+import { postUserData, postToken, getPanicAppByCode, validateCredentials, registerDevice, lookupOnboardingCode, registerOnboarding } from "../util/Api";
 import { registerForPushNotificationsAsync } from "../util/Notifications";
 import { MaterialIcons, Ionicons } from "@expo/vector-icons";
 import { Dimensions } from "react-native";
@@ -113,6 +113,11 @@ function Configuration({ onAuthorized, activeProduct, initialData }) {
   const [panicAppData, setPanicAppData] = useState(null);
   const [masterConfig, setMasterConfig] = useState(null);
 
+  // Estados para el nuevo flujo de Onboarding Docta 4
+  const [onboardingInfo, setOnboardingInfo] = useState(null); // onboardingToken, userFields, etc.
+  const [userProfile, setUserProfile] = useState({}); // Valores de los campos dinámicos
+  const [onboardingCode, setOnboardingCode] = useState(""); // El código de 7 dígitos
+
   // Efecto para procesar datos iniciales (Nuevo Flujo)
   useEffect(() => {
     const data = initialData || route.params;
@@ -147,26 +152,41 @@ function Configuration({ onAuthorized, activeProduct, initialData }) {
   const handleBarCodeScanned = ({ type, data }) => {
     if (scanned) return;
     setScanned(true);
+    
+    // Normalización: quedarse solo con los dígitos
+    const digitsOnly = data.replace(/\D/g, "");
+
     try {
-      const parsedData = JSON.parse(data);
-      // Validamos que el QR tenga los campos esperados (c: code, e: equipment, a: account)
-      if (parsedData.c && parsedData.e && parsedData.a) {
-        setLicencias(prev => ({
-          ...prev,
-          panicAppCode: String(parsedData.c).toUpperCase(),
-          targetDeviceId: String(parsedData.e),
-          numberId: String(parsedData.a)
-        }));
+      // Intento 1: ¿Es el formato JSON legacy?
+      try {
+        const parsedData = JSON.parse(data);
+        if (parsedData.c && parsedData.e && parsedData.a) {
+          setLicencias(prev => ({
+            ...prev,
+            panicAppCode: String(parsedData.c).toUpperCase(),
+            targetDeviceId: String(parsedData.e),
+            numberId: String(parsedData.a)
+          }));
+          setIsScannerVisible(false);
+          Alert.alert("Éxito", "Datos de configuración legacy cargados.");
+          return;
+        }
+      } catch (e) {
+        // No es JSON, seguimos con la validación de 7 dígitos
+      }
+
+      // Intento 2: ¿Es un código de 7 dígitos para Docta 4?
+      if (digitsOnly.length === 7) {
+        setOnboardingCode(digitsOnly);
         setIsScannerVisible(false);
-        Alert.alert("Éxito", "Datos cargados desde el código QR.");
+        Alert.alert("Éxito", `Código ${digitsOnly} detectado.`);
       } else {
-        Alert.alert("Error", "El código QR no tiene el formato de configuración correcto.");
+        Alert.alert("Error", "El código escaneado no es válido. Debe tener 7 dígitos o ser un QR de configuración.");
       }
     } catch (error) {
-      console.error("Error al parsear QR:", error);
-      Alert.alert("Error", "No se pudo leer el código QR. Asegúrese de que sea un QR válido.");
+      console.error("Error al procesar QR:", error);
+      Alert.alert("Error", "No se pudo leer el código QR.");
     } finally {
-      // Pequeño delay para permitir que se procese antes de habilitar el siguiente escaneo
       setTimeout(() => setScanned(false), 2000);
     }
   };
@@ -205,6 +225,51 @@ function Configuration({ onAuthorized, activeProduct, initialData }) {
   };
 
   const saveData = async () => {
+    // Si estamos en el nuevo flujo de Docta 4
+    if (onboardingInfo) {
+      // Validar que todos los campos requeridos estén llenos
+      const missingFields = onboardingInfo.municipality.userFields.filter(field => !userProfile[field] || userProfile[field].trim() === "");
+      if (missingFields.length > 0) {
+        Alert.alert("Campos incompletos", `Por favor complete: ${missingFields.join(", ")}`);
+        return;
+      }
+
+      try {
+        setIsLoading(true);
+        
+        // Obtener ubicación actual para home_location (recomendado)
+        // Por simplicidad en este MVP, podríamos pedirla o mandarla null si no tenemos permisos
+        
+        const registerData = {
+          onboardingToken: onboardingInfo.onboardingToken,
+          profile: userProfile,
+          fcm_token: null, // Se actualizará después
+          plataforma: Platform.OS,
+          app_version: Constants.expoConfig?.version || "3.3.0",
+          modelo: `${Device.brand} ${Device.modelName}`
+        };
+
+        console.log("Enviando registro de onboarding:", registerData);
+        const result = await registerOnboarding(registerData);
+        console.log("Registro exitoso:", result);
+
+        if (onAuthorized) {
+          onAuthorized();
+        } else {
+          navigation.replace("Principal");
+        }
+        return;
+      } catch (error) {
+        console.error("Error en registro onboarding:", error);
+        const detail = error.response?.data?.detail || "Error al realizar el registro.";
+        Alert.alert("Error", detail);
+        return;
+      } finally {
+        setIsLoading(false);
+      }
+    }
+
+    // Flujo Legacy
     if (!isButtonEnabled) {
       alert("Por favor, complete todos los campos de datos personales antes de continuar.");
       return;
@@ -321,41 +386,77 @@ console.log("¿Es accepted?:", result?.licenseCreated?.status === "accepted");
   };
 
   const nextStep = async () => {
-    if (!isContinueButtonEnabled) {
-      alert("Complete los campos"); // Muestra el alerta si no están completos los campos
-      return; // Detiene la ejecución si no está habilitado el botón
+    // Si tenemos un código de 7 dígitos, usamos el flujo de Onboarding Docta 4
+    const digitsOnly = onboardingCode.replace(/\D/g, "");
+    
+    if (digitsOnly.length === 7) {
+      try {
+        setIsLoading(true);
+        console.log("Iniciando lookup para código:", digitsOnly);
+        const result = await lookupOnboardingCode(digitsOnly);
+        console.log("Resultado lookup:", result);
+        
+        if (result.canRegister) {
+          setOnboardingInfo(result);
+          // Inicializar el perfil con los campos requeridos
+          const initialProfile = {};
+          result.municipality.userFields.forEach(field => {
+            initialProfile[field] = "";
+          });
+          setUserProfile(initialProfile);
+          setCurrentStep(2);
+        } else {
+          Alert.alert("Sin cupo", result.detail || "No quedan licencias en este equipo.");
+        }
+        return;
+      } catch (error) {
+        console.error("Error en lookup:", error);
+        const status = error.response?.status;
+        const message = error.response?.data?.message || "Error al validar el código.";
+        
+        if (status === 404) {
+          Alert.alert("Error", "Código incorrecto, revisá el sticker.");
+        } else if (status === 403) {
+          Alert.alert("Error", "Este equipo no está habilitado.");
+        } else if (status === 429) {
+          Alert.alert("Error", "Demasiados intentos. Espere un minuto.");
+        } else {
+          Alert.alert("Error", message);
+        }
+        return;
+      } finally {
+        setIsLoading(false);
+      }
     }
 
-    // Validar credenciales antes de avanzar
+    // Flujo Legacy / Manual
+    if (!isContinueButtonEnabled) {
+      alert("Complete los campos o ingrese un código de 7 dígitos"); 
+      return;
+    }
+
     try {
       setIsLoading(true);
       
-      // Preparar datos para validación
       const validationData = {
         panicAppCode: String(licencias.panicAppCode).trim().toUpperCase(),
         targetDeviceId: String(licencias.targetDeviceId).trim().padStart(4, '0'),
         numberId: String(licencias.numberId).trim().padStart(4, '0'),
       };
 
-      console.log("Validando credenciales:", validationData);
-      
-      // Validar credenciales
+      console.log("Validando credenciales legacy:", validationData);
       await validateCredentials(validationData);
-      console.log("Credenciales válidas");
-
-      // Obtener datos del panicapp después de validar
+      
       const panicAppCode = String(licencias.panicAppCode).trim().toUpperCase();
       const panicAppInfo = await getPanicAppByCode(panicAppCode);
-      console.log("Datos del PanicApp:", panicAppInfo);
       setPanicAppData(panicAppInfo);
       
       if (currentStep < 2) {
-        setCurrentStep(currentStep + 1); // Avanza al siguiente paso solo si la validación fue exitosa
+        setCurrentStep(currentStep + 1);
       }
     } catch (error) {
-      console.error("Error en la validación o al obtener datos del panicapp:", error);
+      console.error("Error en validación legacy:", error);
       if (error.response) {
-        // Error de respuesta del servidor
         const status = error.response.status;
         const message = error.response.data?.message || "Error al validar las credenciales";
         if (status === 400 || status === 404) {
@@ -363,8 +464,6 @@ console.log("¿Es accepted?:", result?.licenseCreated?.status === "accepted");
         } else {
           alert(message);
         }
-      } else if (error.message) {
-        alert(error.message);
       } else {
         alert("Error al validar las credenciales. Intente nuevamente.");
       }
@@ -383,7 +482,7 @@ console.log("¿Es accepted?:", result?.licenseCreated?.status === "accepted");
         return (
           <>
             <View style={styles.title}>
-              <Text style={styles.titleText}>Ingrese las Credenciales</Text>
+              <Text style={styles.titleText}>Configuración Docta</Text>
             </View>
 
             <View style={styles.imputContainer}>
@@ -398,72 +497,73 @@ console.log("¿Es accepted?:", result?.licenseCreated?.status === "accepted");
                   } else {
                     Alert.alert(
                       "Permiso denegado", 
-                      "Se necesita acceso a la cámara para escanear el código QR. Por favor, habilítelo en la configuración de su dispositivo."
+                      "Se necesita acceso a la cámara para escanear el código QR."
                     );
                   }
                 }}
               >
                 <MaterialIcons name="qr-code-scanner" size={24} color="white" />
-                <Text style={styles.qrButtonText}>CONFIGURACIÓN RÁPIDA (QR)</Text>
+                <Text style={styles.qrButtonText}>ESCANEAR CÓDIGO QR</Text>
               </TouchableOpacity>
 
-              <Text style={styles.orText}>o ingrese los datos manualmente:</Text>
+              <Text style={styles.orText}>o ingrese el código de 7 dígitos:</Text>
 
-              <View>
-                <View style={styles.textContainer}>
-                  <TextInput
-                    style={styles.textImput}
-                    placeholder="Ingrese el código"
-                    placeholderTextColor="#616060"
-                    onChangeText={(text) => handleChange("panicAppCode", text)}
-                    value={licencias.panicAppCode}
-                  />
-                  <MaterialIcons
-                    name={"vpn-key"}
-                    size={24}
-                    color="#000"
-                    style={styles.icon}
-                  />
-                </View>
+              <View style={styles.textContainer}>
+                <TextInput
+                  style={styles.textImput}
+                  placeholder="Ej: 1234567"
+                  placeholderTextColor="#616060"
+                  keyboardType="numeric"
+                  maxLength={7}
+                  onChangeText={setOnboardingCode}
+                  value={onboardingCode}
+                />
+                <MaterialIcons name="dialpad" size={24} color="#000" style={styles.icon} />
               </View>
-              <View>
-                <View style={styles.textContainer}>
-                  <TextInput
-                    style={styles.textImput}
-                    placeholder="Ingrese número de equipo"
-                    placeholderTextColor="#616060"
-                    keyboardType="numeric"
-                    onChangeText={(text) =>
-                      handleChange("targetDeviceId", text)
-                    }
-                    value={licencias.targetDeviceId}
-                  />
-                  <MaterialIcons
-                    name={"vpn-key"}
-                    size={24}
-                    color="#000"
-                    style={styles.icon}
-                  />
+
+              <TouchableOpacity 
+                onPress={() => {
+                  // Pequeño hack para mostrar los campos legacy si es necesario
+                  setLicencias({...licencias, panicAppCode: "legacy"});
+                }}
+                style={{ marginTop: 10, alignSelf: 'center' }}
+              >
+                <Text style={{ color: '#666', fontSize: 12, textDecorationLine: 'underline' }}>
+                  ¿Tenés una licencia anterior?
+                </Text>
+              </TouchableOpacity>
+
+              {licencias.panicAppCode === "legacy" && (
+                <View style={{ marginTop: 20 }}>
+                  <Text style={styles.orText}>Configuración manual (Legacy):</Text>
+                  <View style={styles.textContainer}>
+                    <TextInput
+                      style={styles.textImput}
+                      placeholder="Código de licencia"
+                      onChangeText={(text) => handleChange("panicAppCode", text)}
+                      value={licencias.panicAppCode === "legacy" ? "" : licencias.panicAppCode}
+                    />
+                  </View>
+                  <View style={styles.textContainer}>
+                    <TextInput
+                      style={styles.textImput}
+                      placeholder="Número de equipo"
+                      keyboardType="numeric"
+                      onChangeText={(text) => handleChange("targetDeviceId", text)}
+                      value={licencias.targetDeviceId}
+                    />
+                  </View>
+                  <View style={styles.textContainer}>
+                    <TextInput
+                      style={styles.textImput}
+                      placeholder="Número de cuenta"
+                      keyboardType="numeric"
+                      onChangeText={(text) => handleChange("numberId", text)}
+                      value={licencias.numberId}
+                    />
+                  </View>
                 </View>
-              </View>
-              <View>
-                <View style={styles.textContainer}>
-                  <TextInput
-                    style={styles.textImput}
-                    placeholder="Ingrese número de cuenta"
-                    placeholderTextColor="#616060"
-                    keyboardType="numeric"
-                    onChangeText={(text) => handleChange("numberId", text)}
-                    value={licencias.numberId}
-                  />
-                  <MaterialIcons
-                    name={"vpn-key"}
-                    size={24}
-                    color="#000"
-                    style={styles.icon}
-                  />
-                </View>
-              </View>
+              )}
 
               {/* Checkbox de Términos y Condiciones */}
               <View style={styles.termsContainer}>
@@ -499,75 +599,76 @@ console.log("¿Es accepted?:", result?.licenseCreated?.status === "accepted");
               extraHeight={150}
             >
               <View style={styles.imputContainer}>
-                <View>
-                  <View style={styles.textContainer}>
-                    <TextInput
-                      style={styles.textImput}
-                      placeholder="Ingrese vecino"
-                      placeholderTextColor="#616060"
-                      onChangeText={(text) => handleChange("Vecino", text)}
-                      value={licencias.Vecino}
-                    />
-                    <MaterialIcons
-                      name={"person"}
-                      size={24}
-                      color="#000"
-                      style={styles.icon}
-                    />
-                  </View>
+                <View style={{ marginBottom: 20 }}>
+                  <Text style={styles.titleText}>
+                    {onboardingInfo ? `Datos para ${onboardingInfo.municipality.name}` : "Datos Personales"}
+                  </Text>
                 </View>
-                <View>
-                  <View style={styles.textContainer}>
-                    <TextInput
-                      style={styles.textImput}
-                      placeholder="Ingrese Referencia"
-                      placeholderTextColor="#616060"
-                      keyboardType="numeric"
-                      onChangeText={(text) => handleChange("Documento", text)}
-                      value={licencias.Documento}
-                    />
-                    <MaterialIcons
-                      name={"subtitles"}
-                      size={24}
-                      color="#000"
-                      style={styles.icon}
-                    />
-                  </View>
-                </View>
-                <View>
-                  <View style={styles.textContainer}>
-                    <TextInput
-                      style={styles.textImput}
-                      placeholder="Ingrese Ubicación"
-                      placeholderTextColor="#616060"
-                      onChangeText={(text) => handleChange("Direccion", text)}
-                      value={licencias.Direccion}
-                    />
-                    <MaterialIcons
-                      name={"location-on"}
-                      size={24}
-                      color="#000"
-                      style={styles.icon}
-                    />
-                  </View>
-                </View>
-                <View>
-                  <View style={styles.textContainer}>
-                    <TextInput
-                      style={styles.textImput}
-                      placeholder="Ingrese su barrio"
-                      placeholderTextColor="#616060"
-                      onChangeText={(text) => handleChange("Barrio", text)}
-                      value={licencias.Barrio}
-                    />
-                    <MaterialIcons
-                      name={"location-on"}
-                      size={24}
-                      color="#000"
-                      style={styles.icon}
-                    />
-                  </View>
-                </View>
+
+                {onboardingInfo ? (
+                  // Formulario dinámico para Docta 4
+                  onboardingInfo.municipality.userFields.map((field, index) => (
+                    <View key={index} style={styles.textContainer}>
+                      <TextInput
+                        style={styles.textImput}
+                        placeholder={`Ingrese ${field}`}
+                        placeholderTextColor="#616060"
+                        onChangeText={(text) => {
+                          setUserProfile(prev => ({ ...prev, [field]: text }));
+                        }}
+                        value={userProfile[field]}
+                      />
+                      <MaterialIcons
+                        name={field.toLowerCase().includes("vecino") || field.toLowerCase().includes("nombre") ? "person" : "edit"}
+                        size={24}
+                        color="#000"
+                        style={styles.icon}
+                      />
+                    </View>
+                  ))
+                ) : (
+                  // Formulario estático para Legacy
+                  <>
+                    <View style={styles.textContainer}>
+                      <TextInput
+                        style={styles.textImput}
+                        placeholder="Ingrese vecino"
+                        placeholderTextColor="#616060"
+                        onChangeText={(text) => handleChange("Vecino", text)}
+                        value={licencias.Vecino}
+                      />
+                      <MaterialIcons name="person" size={24} color="#000" style={styles.icon} />
+                    </View>
+                    <View style={styles.textContainer}>
+                      <TextInput
+                        style={styles.textImput}
+                        placeholder="Ingrese Referencia"
+                        keyboardType="numeric"
+                        onChangeText={(text) => handleChange("Documento", text)}
+                        value={licencias.Documento}
+                      />
+                      <MaterialIcons name="subtitles" size={24} color="#000" style={styles.icon} />
+                    </View>
+                    <View style={styles.textContainer}>
+                      <TextInput
+                        style={styles.textImput}
+                        placeholder="Ingrese Ubicación"
+                        onChangeText={(text) => handleChange("Direccion", text)}
+                        value={licencias.Direccion}
+                      />
+                      <MaterialIcons name="location-on" size={24} color="#000" style={styles.icon} />
+                    </View>
+                    <View style={styles.textContainer}>
+                      <TextInput
+                        style={styles.textImput}
+                        placeholder="Ingrese su barrio"
+                        onChangeText={(text) => handleChange("Barrio", text)}
+                        value={licencias.Barrio}
+                      />
+                      <MaterialIcons name="location-on" size={24} color="#000" style={styles.icon} />
+                    </View>
+                  </>
+                )}
               </View>
             </KeyboardAvoidingView>
           </>
