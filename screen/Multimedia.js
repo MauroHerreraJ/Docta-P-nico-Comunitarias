@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect } from "react";
+import React, { useState, useRef, useEffect, useCallback } from "react";
 import {
   StyleSheet,
   View,
@@ -13,8 +13,13 @@ import {
   Image,
   Animated,
   ScrollView,
+  PanResponder,
+  Vibration,
+  Keyboard,
+  BackHandler,
 } from "react-native";
 import { Ionicons, MaterialIcons } from "@expo/vector-icons";
+import { useNavigation, useFocusEffect } from "@react-navigation/native";
 import * as ImagePicker from "expo-image-picker";
 import { 
   useAudioRecorder, 
@@ -92,6 +97,8 @@ const AudioMessage = ({ uri, isMine }) => {
 };
 
 function Multimedia({ onFinalize, panicId }) {
+  const navigation = useNavigation();
+  const inputRef = useRef(null);
   const [text, setText] = useState("");
   const [images, setImages] = useState([]);
   const [messages, setMessages] = useState([]);
@@ -99,11 +106,50 @@ function Multimedia({ onFinalize, panicId }) {
   const [loading, setLoading] = useState({ text: false, image: false, audio: false, messages: false });
   const [audioUri, setAudioUri] = useState(null);
   const [recordingStartTime, setRecordingStartTime] = useState(null);
+  const [recordingDuration, setRecordingDuration] = useState(0);
+  const [isCancelling, setIsCancelling] = useState(false);
   
+  // Refs para evitar cierres obsoletos en PanResponder
+  const recordingStartTimeRef = useRef(null);
+  const isRecordingRef = useRef(false);
+
   const recordingTimer = useRef(null);
+  const durationInterval = useRef(null);
+  const isPreparing = useRef(false);
   const pollTimer = useRef(null);
+  const wasFocusedBeforeRecording = useRef(false);
   const flatListRef = useRef(null);
   const waveformAnim = useRef(new Animated.Value(0)).current;
+  const micScale = useRef(new Animated.Value(1)).current;
+  const cancelTranslateX = useRef(new Animated.Value(0)).current;
+
+  // Manejar botón de atrás del dispositivo
+  useFocusEffect(
+    useCallback(() => {
+      const onBackPress = () => {
+        Alert.alert(
+          "¿Abandonar Multimedia?",
+          "Si sale de esta pantalla, no podrá adjuntar más información a este reporte.",
+          [
+            { text: "Continuar Reportando", style: "cancel", onPress: () => {} },
+            { 
+              text: "Salir", 
+              style: "destructive", 
+              onPress: () => {
+                if (typeof onFinalize === 'function') onFinalize();
+                navigation.navigate("Desit");
+              } 
+            },
+          ]
+        );
+        return true;
+      };
+
+      const subscription = BackHandler.addEventListener("hardwareBackPress", onBackPress);
+
+      return () => subscription.remove();
+    }, [onFinalize, navigation])
+  );
 
   // Configuración del grabador de audio
   const audioRecorder = useAudioRecorder({
@@ -115,6 +161,94 @@ function Multimedia({ onFinalize, panicId }) {
 
   const { isRecording } = useAudioRecorderState(audioRecorder);
   const player = useAudioPlayer(audioUri);
+
+  // Sincronizar refs con el estado para que el PanResponder los vea
+  useEffect(() => {
+    isRecordingRef.current = isRecording;
+    // Si empezamos a grabar y el teclado estaba abierto, nos aseguramos de mantener el foco
+    if (isRecording && wasFocusedBeforeRecording.current) {
+      inputRef.current?.focus();
+    }
+  }, [isRecording]);
+
+  useEffect(() => {
+    recordingStartTimeRef.current = recordingStartTime;
+  }, [recordingStartTime]);
+
+  // PanResponder para el gesto de deslizar para cancelar
+  const panResponder = useRef(
+    PanResponder.create({
+      onStartShouldSetPanResponder: () => true,
+      onMoveShouldSetPanResponder: () => true,
+      onPanResponderGrant: () => {
+        // Guardamos si el teclado estaba abierto antes de empezar
+        wasFocusedBeforeRecording.current = inputRef.current?.isFocused();
+        
+        // Solo intentamos mantener el foco si ya estaba enfocado
+        if (wasFocusedBeforeRecording.current) {
+          setTimeout(() => {
+            inputRef.current?.focus();
+          }, 10);
+        }
+        
+        if (!isPreparing.current && !recordingStartTimeRef.current) {
+          startRecording();
+        }
+      },
+      onPanResponderMove: (_, gestureState) => {
+        if (gestureState.dx < -50) {
+          setIsCancelling(true);
+        } else {
+          setIsCancelling(false);
+        }
+        
+        // Mover el texto de "Desliza para cancelar" un poco
+        if (gestureState.dx < 0) {
+          cancelTranslateX.setValue(gestureState.dx);
+        }
+      },
+      onPanResponderRelease: (_, gestureState) => {
+        if (gestureState.dx < -100) {
+          cancelRecording();
+        } else {
+          stopRecording();
+        }
+        // Resetear animaciones
+        Animated.spring(cancelTranslateX, { toValue: 0, useNativeDriver: true }).start();
+        setIsCancelling(false);
+      },
+      onPanResponderTerminate: () => {
+        stopRecording();
+        setIsCancelling(false);
+      },
+    })
+  ).current;
+
+  const cancelRecording = async () => {
+    try {
+      if (durationInterval.current) clearInterval(durationInterval.current);
+      
+      // Detener grabación si está activa
+      if (isRecordingRef.current) {
+        await audioRecorder.stop();
+      }
+      
+      // Resetear estados
+      setRecordingStartTime(null);
+      setRecordingDuration(0);
+      isPreparing.current = false;
+      
+      // Resetear animación del micrófono aquí también
+      Animated.spring(micScale, {
+        toValue: 1,
+        useNativeDriver: true,
+      }).start();
+
+      Vibration.vibrate(50); // Feedback táctil corto de cancelación
+    } catch (e) {
+      console.error("Error al cancelar grabación", e);
+    }
+  };
 
   // Animación del espectro de audio
   useEffect(() => {
@@ -139,24 +273,44 @@ function Multimedia({ onFinalize, panicId }) {
 
   // Carga inicial y polling de mensajes
   useEffect(() => {
-    loadInitialMessages();
-    startPolling();
+    const setupChat = async () => {
+      // Configurar audio globalmente para esta pantalla una sola vez
+      try {
+        await setAudioModeAsync({
+          allowsRecording: true,
+          playsInSilentMode: true,
+          staysActiveInBackground: true,
+          shouldDuckAndroid: true,
+          playThroughEarpieceAndroid: false,
+        });
+      } catch (e) {
+        console.warn("Error configurando modo de audio inicial:", e);
+      }
+
+      await initializeChat();
+      startPolling();
+    };
+    
+    setupChat();
+
     return () => {
       if (recordingTimer.current) clearTimeout(recordingTimer.current);
       if (pollTimer.current) clearInterval(pollTimer.current);
     };
   }, []);
 
-  const loadInitialMessages = async () => {
+  const initializeChat = async () => {
     setLoading(prev => ({ ...prev, messages: true }));
     try {
+      // Obtenemos la última secuencia actual para ignorar el historial
       const data = await fetchChatMessages(0);
-      if (data.mensajes) {
-        setMessages(data.mensajes);
+      if (data.ultima_secuencia) {
         setLastSequence(data.ultima_secuencia);
+        console.log("Chat inicializado desde secuencia:", data.ultima_secuencia);
       }
+      setMessages([]); // Aseguramos que el chat empiece vacío visualmente
     } catch (error) {
-      console.error("Error al cargar mensajes iniciales:", error);
+      console.error("Error al inicializar chat:", error);
     } finally {
       setLoading(prev => ({ ...prev, messages: false }));
     }
@@ -217,6 +371,7 @@ function Multimedia({ onFinalize, panicId }) {
     setText("");
     setImages([]);
     setAudioUri(null);
+    Keyboard.dismiss();
 
     try {
       let adjuntoId = null;
@@ -273,38 +428,66 @@ function Multimedia({ onFinalize, panicId }) {
   };
 
   const startRecording = async () => {
+    if (isPreparing.current || isRecordingRef.current || recordingStartTimeRef.current) return;
+    isPreparing.current = true;
+
     try {
       const { granted } = await requestRecordingPermissionsAsync();
       if (!granted) {
         Alert.alert("Permiso denegado", "Se necesita permiso para grabar audio.");
+        isPreparing.current = false;
         return;
       }
 
-      // 🎙️ Configurar sesión para grabación
-      try {
-        await setAudioModeAsync({
-          allowsRecording: true,
-          playsInSilentMode: true,
-        });
-      } catch (e) {
-        console.warn("Error configurando audio para grabación:", e);
-      }
+      Vibration.vibrate(60); // Feedback táctil de inicio
+      
+      // Animación del micrófono
+      Animated.spring(micScale, {
+        toValue: 1.5,
+        friction: 4,
+        useNativeDriver: true,
+      }).start();
 
-      setRecordingStartTime(Date.now());
       await audioRecorder.prepareToRecordAsync();
       audioRecorder.record();
+
+      setRecordingStartTime(Date.now());
+      setRecordingDuration(0);
+
+      // Iniciar contador de tiempo
+      if (durationInterval.current) clearInterval(durationInterval.current);
+      durationInterval.current = setInterval(() => {
+        setRecordingDuration(prev => prev + 1);
+      }, 1000);
 
       if (recordingTimer.current) clearTimeout(recordingTimer.current);
       recordingTimer.current = setTimeout(() => stopRecording(), 60000);
     } catch (err) {
       console.error("Failed to start recording", err);
+    } finally {
+      isPreparing.current = false;
     }
   };
 
   const stopRecording = async () => {
-    if (!isRecording) return;
+    // Si todavía se está preparando, esperamos un poco o forzamos el stop después
+    if (isPreparing.current) {
+      setTimeout(() => stopRecording(), 100);
+      return;
+    }
+
+    if (!isRecordingRef.current && !recordingStartTimeRef.current) return;
+    
+    // Resetear animación del micrófono
+    Animated.spring(micScale, {
+      toValue: 1,
+      useNativeDriver: true,
+    }).start();
+
+    if (durationInterval.current) clearInterval(durationInterval.current);
+
     const now = Date.now();
-    const duration = now - (recordingStartTime || 0);
+    const duration = now - (recordingStartTimeRef.current || 0);
     if (duration < 1000) {
       setTimeout(async () => await finalizeRecording(), 1000 - duration);
     } else {
@@ -317,12 +500,21 @@ function Multimedia({ onFinalize, panicId }) {
     try {
       await audioRecorder.stop();
       setAudioUri(audioRecorder.uri);
+      Vibration.vibrate(40); // Feedback táctil de fin
     } catch (error) {
       console.error("Failed to stop recording", error);
     } finally {
       setLoading(prev => ({ ...prev, audio: false }));
       setRecordingStartTime(null);
+      setRecordingDuration(0);
+      isPreparing.current = false;
     }
+  };
+
+  const formatTimer = (seconds) => {
+    const mins = Math.floor(seconds / 60);
+    const secs = seconds % 60;
+    return `${mins}:${secs.toString().padStart(2, '0')}`;
   };
 
   const renderMessage = ({ item }) => {
@@ -375,21 +567,47 @@ function Multimedia({ onFinalize, panicId }) {
 
   return (
     <KeyboardAvoidingView 
-      behavior={Platform.OS === "ios" ? "padding" : undefined}
+      behavior={Platform.OS === "ios" ? "padding" : "padding"}
       style={{ flex: 1 }}
-      keyboardVerticalOffset={Platform.OS === "ios" ? 90 : 0}
+      keyboardVerticalOffset={Platform.OS === "ios" ? 90 : 80}
     >
       <View style={styles.container}>
       <View style={styles.header}>
-        <View style={styles.emergencyBadge}>
-          <Ionicons name="warning" size={16} color="white" />
-          <Text style={styles.emergencyText}>CANAL DE EMERGENCIA ACTIVO</Text>
+        <View style={styles.headerRow}>
+          <TouchableOpacity 
+            style={styles.backButton} 
+            onPress={() => {
+              Alert.alert(
+                "¿Abandonar Multimedia?",
+                "Si sale de esta pantalla, no podrá adjuntar más información a este reporte.",
+                [
+                  { text: "Continuar Reportando", style: "cancel", onPress: () => {} },
+                  { 
+                    text: "Salir", 
+                    style: "destructive", 
+                    onPress: () => {
+                      if (typeof onFinalize === 'function') onFinalize();
+                      navigation.navigate("Desit");
+                    } 
+                  },
+                ]
+              );
+            }}
+          >
+            <Ionicons name="arrow-back" size={24} color="#222266" />
+          </TouchableOpacity>
+          <View style={styles.emergencyBadge}>
+            <Ionicons name="warning" size={16} color="white" />
+            <Text style={styles.emergencyText}>CANAL DE EMERGENCIA ACTIVO</Text>
+          </View>
+          <View style={{ width: 40 }} /> 
         </View>
       </View>
 
       <FlatList
         ref={flatListRef}
         data={messages}
+        keyboardShouldPersistTaps="always"
         renderItem={renderMessage}
         keyExtractor={(item, index) => item.secuencia?.toString() || item.client_message_id || index.toString()}
         contentContainerStyle={styles.messageList}
@@ -430,34 +648,87 @@ function Multimedia({ onFinalize, panicId }) {
         </View>
       )}
 
-      {/* Barra de entrada */}
+      {/* Barra de entrada dinámica estilo WhatsApp */}
       <View style={styles.inputArea}>
-        <TouchableOpacity style={styles.iconBtn} onPress={takePhoto}>
-          <Ionicons name="camera" size={28} color="#222266" />
-        </TouchableOpacity>
-        
-        <TouchableOpacity style={styles.iconBtn} onPress={isRecording ? stopRecording : startRecording}>
-          <Ionicons name={isRecording ? "stop-circle" : "mic"} size={28} color={isRecording ? "#E74C3C" : "#222266"} />
-        </TouchableOpacity>
+        <View style={styles.inputMainContainer}>
+          {/* El Input se mantiene siempre en el DOM para no perder el foco del teclado */}
+          <View style={[
+            styles.inputControlsContainer, 
+            isRecording && { opacity: 0 }
+          ]}>
+            <TouchableOpacity style={styles.iconBtn} onPress={takePhoto}>
+              <Ionicons name="camera" size={28} color="#222266" />
+            </TouchableOpacity>
 
-        <TextInput
-          style={styles.input}
-          placeholder="Escriba un mensaje..."
-          value={text}
-          onChangeText={setText}
-          multiline
-        />
+            <TextInput
+              ref={inputRef}
+              style={styles.input}
+              placeholder="Escriba un mensaje..."
+              value={text}
+              onChangeText={setText}
+              multiline
+              blurOnSubmit={false}
+            />
+          </View>
 
-        <TouchableOpacity 
-          style={[styles.sendBtn, (!text.trim() && images.length === 0 && !audioUri) && styles.sendBtnDisabled]} 
-          onPress={handleSend}
-          disabled={!text.trim() && images.length === 0 && !audioUri}
-        >
-          <Ionicons name="send" size={24} color="white" />
-        </TouchableOpacity>
+          {/* Interfaz de grabación que aparece sobre el input */}
+          {isRecording && (
+            <View style={[styles.recordingContainer, { position: 'absolute', left: 0, right: 0, top: 0, bottom: 0, backgroundColor: 'white' }]}>
+              <View style={styles.recordingInfo}>
+                <Animated.View style={[styles.redDot, { opacity: waveformAnim }]} />
+                <Text style={styles.timerText}>{formatTimer(recordingDuration)}</Text>
+              </View>
+              
+              <Animated.View 
+                style={[
+                  styles.cancelHintContainer, 
+                  { transform: [{ translateX: cancelTranslateX }] }
+                ]}
+              >
+                <Text style={[styles.cancelHint, isCancelling && { color: '#E74C3C' }]}>
+                  {isCancelling ? "Suelta para borrar" : "◀ Desliza para cancelar"}
+                </Text>
+              </Animated.View>
+              <View style={{ width: 50 }} /> 
+            </View>
+          )}
+        </View>
+
+        {/* Botón de Acción Estable (Micrófono/Enviar) */}
+        <View style={styles.actionButtonContainer}>
+          {(!text.trim() && images.length === 0 && !audioUri) ? (
+            <Animated.View 
+              {...panResponder.panHandlers}
+              style={[
+                styles.micBtnContainer, 
+                isRecording && styles.micBtnContainerActive,
+                { transform: [{ scale: micScale }] }
+              ]}
+            >
+              <Ionicons 
+                name="mic" 
+                size={isRecording ? 32 : 28} 
+                color={isRecording ? "#E74C3C" : "#222266"} 
+              />
+            </Animated.View>
+          ) : (
+            <TouchableOpacity 
+              style={[styles.sendBtn, styles.sendBtnActive]} 
+              onPress={handleSend}
+            >
+              <Ionicons name="send" size={24} color="white" />
+            </TouchableOpacity>
+          )}
+        </View>
       </View>
 
-      <TouchableOpacity style={styles.finalizeBtn} onPress={onFinalize}>
+      <TouchableOpacity 
+        style={styles.finalizeBtn} 
+        onPress={() => {
+          if (onFinalize) onFinalize();
+          navigation.navigate("Desit");
+        }}
+      >
         <Text style={styles.finalizeBtnText}>FINALIZAR REPORTE</Text>
       </TouchableOpacity>
       </View>
@@ -467,7 +738,9 @@ function Multimedia({ onFinalize, panicId }) {
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: "#F0F2F5" },
-  header: { padding: 10, alignItems: "center", backgroundColor: "white", borderBottomWidth: 1, borderBottomColor: "#DDD" },
+  header: { padding: 10, backgroundColor: "white", borderBottomWidth: 1, borderBottomColor: "#DDD" },
+  headerRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", width: "100%" },
+  backButton: { padding: 5 },
   emergencyBadge: { flexDirection: "row", alignItems: "center", backgroundColor: "#E74C3C", paddingHorizontal: 12, paddingVertical: 4, borderRadius: 15 },
   emergencyText: { color: "white", fontSize: 10, fontFamily: "open-sans-bold", marginLeft: 5 },
   
@@ -493,11 +766,96 @@ const styles = StyleSheet.create({
   messageTime: { fontSize: 10, color: "#999" },
   emptyChatText: { textAlign: "center", color: "#999", marginTop: 50, fontFamily: "open-sans" },
 
-  inputArea: { flexDirection: "row", alignItems: "center", padding: 10, backgroundColor: "white", borderTopWidth: 1, borderTopColor: "#EEE" },
-  input: { flex: 1, backgroundColor: "#F0F2F5", borderRadius: 20, paddingHorizontal: 15, paddingVertical: 8, marginHorizontal: 10, maxHeight: 100, fontSize: 16 },
+  inputArea: { 
+    flexDirection: "row", 
+    alignItems: "center", 
+    padding: 10, 
+    backgroundColor: "white", 
+    borderTopWidth: 1, 
+    borderTopColor: "#EEE" 
+  },
+  inputMainContainer: {
+    flex: 1,
+    flexDirection: "row",
+    alignItems: "center",
+  },
+  inputControlsContainer: {
+    flex: 1,
+    flexDirection: "row",
+    alignItems: "center",
+  },
+  actionButtonContainer: {
+    width: 50,
+    height: 50,
+    justifyContent: "center",
+    alignItems: "center",
+    marginLeft: 5,
+  },
+  input: { 
+    flex: 1, 
+    backgroundColor: "#F0F2F5", 
+    borderRadius: 20, 
+    paddingHorizontal: 15, 
+    paddingVertical: 8, 
+    marginHorizontal: 10, 
+    maxHeight: 100, 
+    fontSize: 16 
+  },
   iconBtn: { padding: 5 },
-  sendBtn: { width: 44, height: 44, borderRadius: 22, backgroundColor: "#222266", justifyContent: "center", alignItems: "center" },
+  sendBtn: { 
+    width: 44, 
+    height: 44, 
+    borderRadius: 22, 
+    backgroundColor: "#222266", 
+    justifyContent: "center", 
+    alignItems: "center" 
+  },
   sendBtnDisabled: { backgroundColor: "#CCC" },
+  sendBtnActive: { backgroundColor: "#222266" },
+
+  micBtnContainer: {
+    width: 44,
+    height: 44,
+    justifyContent: "center",
+    alignItems: "center",
+  },
+  micBtnContainerActive: {
+    backgroundColor: "rgba(231, 76, 60, 0.1)",
+    borderRadius: 22,
+  },
+  recordingContainer: {
+    flex: 1,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    height: 44,
+  },
+  recordingInfo: {
+    flexDirection: "row",
+    alignItems: "center",
+  },
+  redDot: {
+    width: 10,
+    height: 10,
+    borderRadius: 5,
+    backgroundColor: "#E74C3C",
+    marginRight: 8,
+  },
+  timerText: {
+    fontSize: 16,
+    color: "#333",
+    fontFamily: "open-sans-bold",
+  },
+  cancelHintContainer: {
+    flex: 1,
+    alignItems: "center",
+    marginRight: 40,
+  },
+  cancelHint: {
+    fontSize: 14,
+    color: "#999",
+    fontFamily: "open-sans",
+  },
 
   pendingAttachments: { backgroundColor: "white", padding: 10, borderTopWidth: 1, borderTopColor: "#EEE" },
   thumbWrapper: { marginRight: 10, position: "relative" },

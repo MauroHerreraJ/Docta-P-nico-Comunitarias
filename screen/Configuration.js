@@ -122,19 +122,29 @@ function Configuration({ onAuthorized, activeProduct, initialData }) {
   useEffect(() => {
     const data = initialData || route.params;
     if (data?.initialStep) {
-      const { initialStep, masterConfig: mConfig, panicAppData: pData } = data;
+      const { initialStep, masterConfig: mConfig, panicAppData: pData, onboardingInfo: oInfo } = data;
       
       setMasterConfig(mConfig);
       setPanicAppData(pData);
       
+      if (oInfo) {
+        setOnboardingInfo(oInfo);
+        // Inicializar el perfil con los campos requeridos
+        const initialProfile = {};
+        oInfo.municipality.userFields.forEach(field => {
+          initialProfile[field] = "";
+        });
+        setUserProfile(initialProfile);
+      }
+
       setLicencias(prev => ({
         ...prev,
         panicAppCode: mConfig.muniCode,
-        targetDeviceId: mConfig.equipment,
-        numberId: "auto"
+        targetDeviceId: mConfig.equipment || "",
+        numberId: mConfig.isDocta4 ? "auto" : "auto"
       }));
       
-      setIsTermsAccepted(true);
+      setIsTermsAccepted(false);
       setCurrentStep(initialStep);
     }
   }, [initialData, route.params]);
@@ -193,30 +203,37 @@ function Configuration({ onAuthorized, activeProduct, initialData }) {
   //console.log(altoBox);
 
   useEffect(() => {
-    if (
-      licencias.panicAppCode &&
-      licencias.targetDeviceId &&
-      licencias.numberId &&
-      isTermsAccepted
-    ) {
+    const digitsOnly = onboardingCode.replace(/\D/g, "");
+    const isDocta4Flow = digitsOnly.length === 7;
+    const isLegacyFlow = licencias.panicAppCode && 
+                        licencias.panicAppCode !== "legacy" && 
+                        licencias.targetDeviceId && 
+                        licencias.numberId;
+
+    if (isDocta4Flow || isLegacyFlow) {
       setContinueButtonEnabled(true);
     } else {
       setContinueButtonEnabled(false);
     }
-  }, [licencias, isTermsAccepted]); // Dependencias
+  }, [onboardingCode, licencias]); // Dependencias
 
   useEffect(() => {
-    if (
-      licencias.Vecino &&
-      licencias.Documento &&
-      licencias.Direccion &&
-      licencias.Barrio
-    ) {
-      setIsButtonEnabled(true);
+    if (onboardingInfo) {
+      // Flujo Docta 4: validar que todos los campos requeridos estén llenos en userProfile
+      const requiredFields = onboardingInfo.municipality.userFields || [];
+      const allFilled = requiredFields.every(field => userProfile[field] && userProfile[field].trim() !== "");
+      setIsButtonEnabled(allFilled && isTermsAccepted);
     } else {
-      setIsButtonEnabled(false);
+      // Flujo Legacy
+      const allFilled = !!(
+        licencias.Vecino &&
+        licencias.Documento &&
+        licencias.Direccion &&
+        licencias.Barrio
+      );
+      setIsButtonEnabled(allFilled && isTermsAccepted);
     }
-  }, [licencias]);
+  }, [licencias, userProfile, onboardingInfo, isTermsAccepted]);
 
   const [isLoading, setIsLoading] = useState(false);
 
@@ -237,13 +254,10 @@ function Configuration({ onAuthorized, activeProduct, initialData }) {
       try {
         setIsLoading(true);
         
-        // Obtener ubicación actual para home_location (recomendado)
-        // Por simplicidad en este MVP, podríamos pedirla o mandarla null si no tenemos permisos
-        
         const registerData = {
           onboardingToken: onboardingInfo.onboardingToken,
           profile: userProfile,
-          fcm_token: null, // Se actualizará después
+          fcm_token: null, 
           plataforma: Platform.OS,
           app_version: Constants.expoConfig?.version || "3.3.0",
           modelo: `${Device.brand} ${Device.modelName}`
@@ -252,6 +266,25 @@ function Configuration({ onAuthorized, activeProduct, initialData }) {
         console.log("Enviando registro de onboarding:", registerData);
         const result = await registerOnboarding(registerData);
         console.log("Registro exitoso:", result);
+
+        // 🚀 GUARDAR EN ASYNC STORAGE PARA DOCTA 4
+        const storageKey = getStorageKey(activeProduct);
+        const storageData = {
+          result: {
+            licenseCreated: {
+              status: "accepted",
+              code: result.token, 
+            }
+          },
+          token: { 
+            access_token: result.token,
+            isDocta4: true 
+          },
+          panicAppData: result.municipality || onboardingInfo.municipality
+        };
+        
+        await AsyncStorage.setItem(storageKey, JSON.stringify(storageData));
+        console.log(`✅ Datos Docta 4 guardados en ${storageKey} (incluyendo panicAppData)`);
 
         if (onAuthorized) {
           onAuthorized();
@@ -564,29 +597,6 @@ console.log("¿Es accepted?:", result?.licenseCreated?.status === "accepted");
                   </View>
                 </View>
               )}
-
-              {/* Checkbox de Términos y Condiciones */}
-              <View style={styles.termsContainer}>
-                <TouchableOpacity
-                  style={[styles.checkbox, isTermsAccepted && styles.checkboxChecked]}
-                  onPress={() => setIsTermsAccepted(!isTermsAccepted)}
-                >
-                  {isTermsAccepted && (
-                    <MaterialIcons name="check" size={18} color="white" />
-                  )}
-                </TouchableOpacity>
-                <View style={styles.termsTextContainer}>
-                  <Text style={styles.termsText}>
-                    Acepto los{" "}
-                    <Text
-                      style={styles.termsLink}
-                      onPress={() => setIsTermsModalVisible(true)}
-                    >
-                      Términos y condiciones de uso
-                    </Text>
-                  </Text>
-                </View>
-              </View>
             </View>
           </>
         );
@@ -669,6 +679,29 @@ console.log("¿Es accepted?:", result?.licenseCreated?.status === "accepted");
                     </View>
                   </>
                 )}
+
+                {/* Checkbox de Términos y Condiciones movido al paso 2 */}
+                <View style={[styles.termsContainer, { marginTop: 20, marginBottom: 10 }]}>
+                  <TouchableOpacity
+                    style={[styles.checkbox, isTermsAccepted && styles.checkboxChecked]}
+                    onPress={() => setIsTermsAccepted(!isTermsAccepted)}
+                  >
+                    {isTermsAccepted && (
+                      <MaterialIcons name="check" size={18} color="white" />
+                    )}
+                  </TouchableOpacity>
+                  <View style={styles.termsTextContainer}>
+                    <Text style={styles.termsText}>
+                      Acepto los{" "}
+                      <Text
+                        style={styles.termsLink}
+                        onPress={() => setIsTermsModalVisible(true)}
+                      >
+                        Términos y condiciones de uso
+                      </Text>
+                    </Text>
+                  </View>
+                </View>
               </View>
             </KeyboardAvoidingView>
           </>

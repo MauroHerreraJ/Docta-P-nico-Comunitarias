@@ -10,26 +10,32 @@ import {
   Animated,
   Platform,
   Alert,
+  TouchableOpacity,
 } from "react-native";
+import { useNavigation } from "@react-navigation/native";
 
 import { GlobalStyles } from "../constans/Colors";
-import { Ionicons } from "@expo/vector-icons";
+import { Ionicons, MaterialIcons } from "@expo/vector-icons";
 import { savePost, sendLocationDocta4 } from "../util/Api";
 import * as Location from "expo-location";
 import { LinearGradient } from "expo-linear-gradient";
 import SecondaryButton from "../component/SecondaryButton";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 
-const AllButtons = ({ onPanicSuccess, onPanicCancel, activeProduct }) => {
+const AllButtons = ({ onPanicSuccess, onPanicCancel, activeProduct, externalPanicId }) => {
+  const navigation = useNavigation();
   const [showProgressBar, setShowProgressBar] = useState(false);
   const [isPanicActive, setIsPanicActive] = useState(false);
+  const [showInvitation, setShowInvitation] = useState(false);
   const [lastPanicId, setLastPanicId] = useState(null);
   const animatedValue = useRef(new Animated.Value(0)).current;
+  const invitationProgress = useRef(new Animated.Value(1)).current;
   const startTimeRef = useRef(null);
+  const invitationTimerRef = useRef(null);
   const screenWidth = Dimensions.get("window").width;
   const screenHeight = Dimensions.get("window").height;
-  const [altoBox, setAltoBox] = useState(screenHeight / 4);
-  const [anchBox, setAnchBox] = useState(screenHeight / 4);
+  const [altoBox, setAltoBox] = useState(screenHeight / 4 - 20);
+  const [anchBox, setAnchBox] = useState(screenWidth / 10);
   const [backgroundImage, setBackgroundImage] = useState("https://i.imgur.com/OGxH3he.png");
 
   // Función para obtener la clave de almacenamiento según el producto (espejada de App.js)
@@ -44,6 +50,18 @@ const AllButtons = ({ onPanicSuccess, onPanicCancel, activeProduct }) => {
     setAnchBox(screenWidth / 10);
   }, [screenHeight]); // Solo cuando cambia la altura de la pantalla
   //console.log("ancho", anchBox, screenWidth, "alto", altoBox, screenHeight);
+
+  useEffect(() => {
+    // Si el pánico se desactiva desde afuera (ej: botón Finalizar en Multimedia)
+    // reseteamos el estado visual local
+    if (!externalPanicId && isPanicActive) {
+      console.log("Resetting panic button state from external signal");
+      setIsPanicActive(false);
+      setShowInvitation(false);
+      setLastPanicId(null);
+      if (invitationTimerRef.current) clearTimeout(invitationTimerRef.current);
+    }
+  }, [externalPanicId]);
 
   useEffect(() => {
     // Cargar imagen de fondo desde AsyncStorage
@@ -63,6 +81,10 @@ const AllButtons = ({ onPanicSuccess, onPanicCancel, activeProduct }) => {
       }
     };
     loadPanicAppData();
+
+    return () => {
+      if (invitationTimerRef.current) clearTimeout(invitationTimerRef.current);
+    };
   }, [activeProduct]);
 
   const handlePressIn = () => {
@@ -102,8 +124,10 @@ const AllButtons = ({ onPanicSuccess, onPanicCancel, activeProduct }) => {
     } finally {
       // Siempre reseteamos la UI para poder seguir probando
       setIsPanicActive(false);
+      setShowInvitation(false);
       setLastPanicId(null);
-      if (onPanicCancel) onPanicCancel();
+      if (invitationTimerRef.current) clearTimeout(invitationTimerRef.current);
+      if (typeof onPanicCancel === 'function') onPanicCancel();
       
       Alert.alert(
         "Evento Cancelado",
@@ -143,8 +167,28 @@ const AllButtons = ({ onPanicSuccess, onPanicCancel, activeProduct }) => {
       const id = result?.id || result?.event_id || null;
       setLastPanicId(id);
       setIsPanicActive(true);
+      setShowInvitation(true);
 
-      // 2. Activar multimedia
+      // 3. Iniciar barra de progreso visual para la invitación (30 segundos)
+      invitationProgress.setValue(1);
+      setTimeout(() => {
+        Animated.timing(invitationProgress, {
+          toValue: 0,
+          duration: 30000,
+          useNativeDriver: false,
+        }).start();
+      }, 100);
+
+      // 4. Iniciar temporizador para ocultar la invitación y resetear estados
+      if (invitationTimerRef.current) clearTimeout(invitationTimerRef.current);
+      invitationTimerRef.current = setTimeout(() => {
+        setShowInvitation(false);
+        setIsPanicActive(false); // El botón vuelve a su estado original
+        setLastPanicId(null);    // Limpiamos el ID del evento activo
+        if (typeof onPanicCancel === 'function') onPanicCancel(); // Informamos a App.js
+      }, 30000);
+
+      // 5. Activar multimedia
       if (onPanicSuccess) onPanicSuccess(result);
 
       // 3. Obtener y enviar ubicación precisa (Post-Pánico DOCTA 4)
@@ -217,30 +261,74 @@ const AllButtons = ({ onPanicSuccess, onPanicCancel, activeProduct }) => {
       resizeMode="cover"
       style={styles.rootScreen}
     >
-      <View style={[styles.buttonRow, { marginTop: altoBox / 20 }]}>
-        <SecondaryButton
-          onPress={turnOnLight}
-          name="wb-sunny"
-          styles={StyleSheet.flatten([
-            styles.baseButtonContainer,
-            { height: altoBox - 15 },
-            styles.lightButton,
-          ])}
-          text="Encender"
-          text2="Reflector"
-        />
-        <SecondaryButton
-          onPress={turnOnSiren}
-          name="notifications-active"
-          styles={StyleSheet.flatten([
-            styles.baseButtonContainer,
-            { height: altoBox - 15 },
-            styles.sirenButton,
-          ])}
-          text="Encender"
-          text2="Sirena"
-        />
-      </View>
+      {showInvitation ? (
+        <View style={styles.invitationContainer}>
+          <View style={styles.invitationCardWrapper}>
+            <TouchableOpacity 
+              style={styles.invitationCard}
+              onPress={() => {
+                if (invitationTimerRef.current) clearTimeout(invitationTimerRef.current);
+                setShowInvitation(false);
+                navigation.navigate("Multimedia");
+              }}
+            >
+              <View style={styles.invitationIconContainer}>
+                <MaterialIcons name="perm-media" size={40} color="#222266" />
+              </View>
+              <View style={styles.invitationTextContainer}>
+                <View style={styles.statusBadge}>
+                  <Ionicons name="checkmark-circle" size={24} color="#4CAF50" />
+                  <Text style={styles.statusText}>Evento enviado</Text>
+                </View>
+                <Text style={styles.invitationTitle}>¿Desea adjuntar información?</Text>
+                <Text style={styles.invitationSubtitle}>Podrá enviar fotos o audio del evento.</Text>
+                <Text style={styles.invitationOptional}>(Opcional)</Text>
+              </View>
+              <Ionicons name="chevron-forward" size={24} color="#BBBBBB" />
+            </TouchableOpacity>
+            {/* Barra de vida de la tarjeta */}
+            <View style={styles.invitationProgressContainer}>
+              <Animated.View 
+                style={[
+                  styles.invitationProgressBar, 
+                  { 
+                    width: invitationProgress.interpolate({
+                      inputRange: [0, 1],
+                      outputRange: ['0%', '100%']
+                    }) 
+                  }
+                ]} 
+              />
+            </View>
+          </View>
+        </View>
+      ) : (
+        <View style={[styles.buttonRow, { marginTop: altoBox / 20 }]}>
+          <SecondaryButton
+            onPress={turnOnLight}
+            name="wb-sunny"
+            styles={StyleSheet.flatten([
+              styles.baseButtonContainer,
+              { height: altoBox - 15 },
+              styles.lightButton,
+            ])}
+            text="Encender"
+            text2="Reflector"
+          />
+          <SecondaryButton
+            onPress={turnOnSiren}
+            name="notifications-active"
+            styles={StyleSheet.flatten([
+              styles.baseButtonContainer,
+              { height: altoBox - 15 },
+              styles.sirenButton,
+            ])}
+            text="Encender"
+            text2="Sirena"
+          />
+        </View>
+      )}
+
       <View style={[styles.buttonRow, { marginTop: altoBox / 20 }]}>
         <SecondaryButton
           onPress={disarm}
@@ -254,6 +342,7 @@ const AllButtons = ({ onPanicSuccess, onPanicCancel, activeProduct }) => {
           text2="Desactivar"
         />
       </View>
+
       <View style={[styles.buttonRow, { marginTop: altoBox / 20 }]}>
         <Pressable onPressIn={handlePressIn} onPressOut={handlePressOut}>
           <View style={styles.panicButtonWrapper}>
@@ -289,6 +378,11 @@ const AllButtons = ({ onPanicSuccess, onPanicCancel, activeProduct }) => {
                 <Text style={styles.textButton}>
                   {isPanicActive ? "CANCELAR EVENTO" : "Pánico"}
                 </Text>
+                {isPanicActive && (
+                  <Text style={styles.holdToCancelText}>
+                    Mantener presionado para cancelar
+                  </Text>
+                )}
               </View>
             </View>
           </View>
@@ -390,5 +484,91 @@ const styles = StyleSheet.create({
   textButton: {
     color: "white",
     fontSize: 15,
+  },
+  invitationContainer: {
+    width: deviceWidth,
+    paddingHorizontal: 20,
+    marginTop: 10,
+    marginBottom: 10,
+    alignItems: "center",
+  },
+  invitationCardWrapper: {
+    width: "100%",
+    backgroundColor: "#FFFFFF",
+    borderRadius: 20,
+    elevation: 10,
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.15,
+    shadowRadius: 5,
+    borderWidth: 1,
+    borderColor: "#EEEEEE",
+    overflow: "hidden",
+  },
+  invitationCard: {
+    width: "100%",
+    padding: 20,
+    flexDirection: "row",
+    alignItems: "center",
+  },
+  invitationProgressContainer: {
+    width: "100%",
+    height: 6,
+    backgroundColor: "rgba(34, 34, 102, 0.05)",
+  },
+  invitationProgressBar: {
+    height: "100%",
+    backgroundColor: "#EB7F27",
+  },
+  invitationIconContainer: {
+    width: 60,
+    height: 60,
+    borderRadius: 30,
+    backgroundColor: "rgba(34, 34, 102, 0.08)",
+    justifyContent: "center",
+    alignItems: "center",
+    marginRight: 15,
+  },
+  invitationTextContainer: {
+    flex: 1,
+  },
+  statusBadge: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: "rgba(76, 175, 80, 0.1)",
+    paddingHorizontal: 14,
+    paddingVertical: 6,
+    borderRadius: 14,
+    alignSelf: "flex-start",
+    marginBottom: 10,
+  },
+  statusText: {
+    color: "#4CAF50",
+    fontSize: 18,
+    fontFamily: "open-sans-bold",
+    marginLeft: 8,
+  },
+  invitationTitle: {
+    color: "#222266",
+    fontSize: 18,
+    fontFamily: "open-sans-bold",
+    marginBottom: 4,
+  },
+  invitationSubtitle: {
+    color: "#666666",
+    fontSize: 14,
+    fontFamily: "open-sans",
+    marginBottom: 4,
+  },
+  invitationOptional: {
+    color: "#EB7F27",
+    fontSize: 12,
+    fontFamily: "open-sans-bold",
+  },
+  holdToCancelText: {
+    color: "rgba(255, 255, 255, 0.8)",
+    fontSize: 12,
+    fontFamily: "open-sans",
+    marginTop: 4,
   },
 });

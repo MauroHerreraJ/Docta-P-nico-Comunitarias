@@ -119,16 +119,22 @@ const getAuthToken = async () => {
   const masterConfig = await AsyncStorage.getItem("@master_config");
   if (masterConfig) {
     const parsed = JSON.parse(masterConfig);
-    // En DOCTA 4, el token de dispositivo se guarda en @master_token o similar
     const deviceToken = await AsyncStorage.getItem("@device_token");
-    return deviceToken;
+    if (deviceToken) return deviceToken;
   }
 
-  const legacyData = await AsyncStorage.getItem("@licencias");
-  if (legacyData) {
-    const parsed = JSON.parse(legacyData);
-    return parsed.token?.accessToken;
+  // Si no está en master_config, buscar en las licencias específicas
+  const products = ["docta_panico", "docta_comunitarias", "docta_legacy"];
+  for (const prod of products) {
+    const key = prod === "docta_legacy" || prod === "docta_panico" ? "@licencias" : `@licencias_${prod}`;
+    const data = await AsyncStorage.getItem(key);
+    if (data) {
+      const parsed = JSON.parse(data);
+      const token = parsed.token?.access_token || parsed.token?.accessToken || parsed.token?.accessToken;
+      if (token) return token;
+    }
   }
+
   return null;
 };
 
@@ -163,13 +169,19 @@ export const registerOnboarding = async (onboardingData) => {
     });
     
     // Guardar el token de dispositivo y datos del municipio
-    if (response.data?.accessToken) {
-      await AsyncStorage.setItem("@device_token", response.data.accessToken);
+    if (response.data?.token) {
+      await AsyncStorage.setItem("@device_token", response.data.token);
       await AsyncStorage.setItem("@device_id", String(response.data.dispositivo_id));
+      
+      const currentConfig = await AsyncStorage.getItem("@master_config");
+      const parsedConfig = currentConfig ? JSON.parse(currentConfig) : {};
+
+      await AsyncStorage.setItem("@master_token", response.data.token);
       await AsyncStorage.setItem("@master_config", JSON.stringify({
+        ...parsedConfig,
         apiUrl: DOCTA4_BASE_URL,
         product: "docta_comunitarias",
-        municipality: response.data.municipality
+        municipality: response.data.municipality || parsedConfig.municipality
       }));
     }
     
@@ -308,10 +320,12 @@ export const sendLocationDocta4 = async (eventId, location) => {
     const token = await getAuthToken();
     
     const payload = {
-      event_id: eventId,
+      id: eventId,        // Intentar con 'id'
+      event_id: eventId,  // Intentar con 'event_id'
+      evento_id: eventId, // Intentar con 'evento_id' (por consistencia con dispositivo_id)
       location: {
         lat: location.lat,
-        lon: location.lng || location.lon,
+        lon: location.lng !== undefined ? location.lng : location.lon,
         precision_m: location.accuracy || location.precision_m || 10,
         capturado_utc: location.timestamp || new Date().toISOString(),
         origen: location.origen || "gps"
@@ -319,7 +333,11 @@ export const sendLocationDocta4 = async (eventId, location) => {
     };
 
     const response = await axios.post(api.location, payload, {
-      headers: { Authorization: `Bearer ${token}` }
+      headers: { 
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+        "X-Docta-App-Key": X_DOCTA_APP_KEY // Agregado por seguridad, igual que en registro
+      }
     });
     return response.data;
   } catch (error) {

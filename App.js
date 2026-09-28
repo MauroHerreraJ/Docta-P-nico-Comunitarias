@@ -10,7 +10,7 @@ import { NavigationContainer } from "@react-navigation/native";
 import { createNativeStackNavigator } from "@react-navigation/native-stack";
 import { createBottomTabNavigator } from "@react-navigation/bottom-tabs";
 import { Ionicons } from "@expo/vector-icons";
-import { Image, Modal, View, Text, TouchableOpacity, StyleSheet, Alert } from "react-native";
+import { Image, Modal, View, Text, TouchableOpacity, StyleSheet, Alert, Animated } from "react-native";
 import { useFonts } from "expo-font";
 import * as SplashScreen from "expo-splash-screen";
 import { useEffect, useState, useRef } from "react";
@@ -39,6 +39,34 @@ const BottomTabs = createBottomTabNavigator();
 const getStorageKey = (product) => {
   if (!product || product === "docta_panico" || product === "docta_legacy") return "@licencias";
   return `@licencias_${product}`;
+};
+
+// 🔹 Componente para el icono animado de pánico/multimedia
+const PulseIcon = ({ name, size, color }) => {
+  const scale = useRef(new Animated.Value(1)).current;
+
+  useEffect(() => {
+    Animated.loop(
+      Animated.sequence([
+        Animated.timing(scale, {
+          toValue: 1.2,
+          duration: 800,
+          useNativeDriver: true,
+        }),
+        Animated.timing(scale, {
+          toValue: 1,
+          duration: 800,
+          useNativeDriver: true,
+        }),
+      ])
+    ).start();
+  }, [scale]);
+
+  return (
+    <Animated.View style={{ transform: [{ scale }] }}>
+      <Ionicons name={name} size={size} color={color} />
+    </Animated.View>
+  );
 };
 
 function EventModal({ visible, onClose, eventData }) {
@@ -272,20 +300,17 @@ function AuthorizedNavigation({ activeProduct }) {
             activeProduct={activeProduct}
             onPanicSuccess={activateMultimedia} 
             onPanicCancel={deactivateMultimedia} 
+            externalPanicId={activePanicId}
           />
         )}
       </BottomTabs.Screen>
 
-      {/* 📸 PESTAÑA MULTIMEDIA (Visible siempre para pruebas o por defecto) */}
+      {/* 📸 PESTAÑA MULTIMEDIA (Registrada pero oculta de la barra inferior) */}
       {activeProduct !== "docta_legacy" && (
         <BottomTabs.Screen
           name="Multimedia"
           options={{
-            title: "",
-            tabBarLabel: "Adjuntar",
-            tabBarIcon: ({ color, size }) => (
-              <Ionicons name="camera" size={size} color={color} />
-            ),
+            tabBarButton: () => null, // Ocultar de la barra inferior
             headerTitle: () => (
               <Image
                 source={{ uri: logoUrl }}
@@ -341,7 +366,8 @@ function AuthorizedNavigation({ activeProduct }) {
 }
 
 function NoAuthorizedNavigation({ activeProduct, onAuthorized, activationData }) {
-  const initialRoute = activeProduct === "docta_panico" ? "Configuration" : "Welcome";
+  const isDocta = activeProduct === "docta_panico" || activeProduct === "docta_comunitarias";
+  const initialRoute = isDocta ? "Configuration" : "Welcome";
   
   return (
     <BottomTabs.Navigator
@@ -517,15 +543,11 @@ function ProductSpecificNavigation({ onReset }) {
         )}
       </BottomTabs.Screen>
 
-      {/* 📸 PESTAÑA MULTIMEDIA (Visible siempre para pruebas) */}
+      {/* 📸 PESTAÑA MULTIMEDIA (Registrada pero oculta de la barra inferior) */}
       <BottomTabs.Screen
         name="Multimedia"
         options={{
-          title: "",
-          tabBarLabel: "Adjuntar",
-          tabBarIcon: ({ color, size }) => (
-            <Ionicons name="camera" size={size} color={color} />
-          ),
+          tabBarButton: () => null, // Ocultar de la barra inferior
           headerTitle: productName,
           headerTitleStyle: { fontSize: 24, fontWeight: 'bold' }
         }}
@@ -735,6 +757,14 @@ function App() {
           setHasMasterCode(true);
           setActiveProduct(activeProd);
           
+          // Reconstruir los datos de activación para la persistencia entre recargas
+          setActivationData({
+            initialStep: 2,
+            masterConfig: parsedMaster,
+            panicAppData: parsedMaster.panicAppData,
+            onboardingInfo: parsedMaster.onboardingInfo
+          });
+
           // Verificamos la licencia específica de este producto
           const specificKey = getStorageKey(activeProd);
           const licenseData = await AsyncStorage.getItem(specificKey);
@@ -822,7 +852,7 @@ function App() {
             )
           ) : (
             // FLUJO DE APP ACTIVA
-            (activeProduct === "docta_panico" || activeProduct === "docta_legacy") ? (
+            (activeProduct === "docta_panico" || activeProduct === "docta_legacy" || activeProduct === "docta_comunitarias") ? (
               <Stack.Screen
                 name="Principal"
                 options={{ headerShown: false }}

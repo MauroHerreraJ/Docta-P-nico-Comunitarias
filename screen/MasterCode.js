@@ -13,7 +13,7 @@ import {
   Modal,
 } from "react-native";
 import AsyncStorage from "@react-native-async-storage/async-storage";
-import { activateMasterCode, getPanicAppByCode } from "../util/Api";
+import { activateMasterCode, getPanicAppByCode, lookupOnboardingCode } from "../util/Api";
 import { Ionicons, MaterialIcons } from "@expo/vector-icons";
 import { CameraView, useCameraPermissions } from 'expo-camera';
 
@@ -28,9 +28,58 @@ function MasterCode({ onActivated, navigation }) {
   const [scanned, setScanned] = useState(false);
 
   const processMasterCode = async (inputCode) => {
+    // Normalización: quedarse solo con los dígitos si es un posible alias de Docta 4
+    const digitsOnly = inputCode.replace(/\D/g, "");
     const cleanCode = inputCode.trim().toUpperCase();
     
-    // Formato nuevo: PRODUCTO-MUNICIPIO-EQUIPO (ej: COMU-0CBD-1005)
+    // CASO 1: Alias de 7 dígitos (Docta 4 Onboarding)
+    if (digitsOnly.length === 7) {
+      setLoading(true);
+      try {
+        console.log("Iniciando lookup para alias Docta 4:", digitsOnly);
+        const result = await lookupOnboardingCode(digitsOnly);
+        
+        if (result.canRegister) {
+          const masterData = {
+            product: "docta_comunitarias",
+            muniCode: digitsOnly,
+            isDocta4: true,
+            onboardingInfo: result,
+            activatedAt: new Date().toISOString()
+          };
+          
+          await AsyncStorage.setItem("@master_config", JSON.stringify(masterData));
+          
+          Alert.alert("Éxito", `Código reconocido para ${result.municipality.name}.`, [
+            { 
+              text: "Continuar", 
+              onPress: () => onActivated("docta_comunitarias", { 
+                initialStep: 2,
+                masterConfig: masterData,
+                onboardingInfo: result
+              }) 
+            }
+          ]);
+          return true;
+        } else {
+          Alert.alert("Sin cupo", result.detail || "No quedan licencias en este equipo.");
+          return true;
+        }
+      } catch (error) {
+        console.error("Error en lookup de alias:", error);
+        const status = error.response?.status;
+        if (status === 404) {
+          Alert.alert("Error", "Código incorrecto, revise el sticker.");
+        } else {
+          Alert.alert("Error", "No se pudo validar el código. Verifique su conexión.");
+        }
+        return true;
+      } finally {
+        setLoading(false);
+      }
+    }
+
+    // CASO 2: Formato Interno PRODUCTO-MUNICIPIO-EQUIPO (ej: COMU-0CBD-1005)
     const parts = cleanCode.split("-");
     
     if (parts.length === 3) {
@@ -48,6 +97,7 @@ function MasterCode({ onActivated, navigation }) {
           activatedAt: new Date().toISOString(),
           muniCode: muniCode,
           equipment: equipment,
+          panicAppData: panicAppInfo,
           isNewFlow: true
         };
 
@@ -135,14 +185,14 @@ function MasterCode({ onActivated, navigation }) {
           resizeMode="contain"
         />
         
-        <Text style={styles.title}>Activación de Producto</Text>
+        <Text style={styles.title}>Bienvenido a Docta</Text>
         <Text style={styles.subtitle}>
-          Use el código QR proporcionado por el referente para activar su aplicación.
+          Para comenzar, escanee el código QR del sticker o ingrese el código de 7 dígitos.
         </Text>
 
-        {!showManualInput && (
+        <View style={styles.buttonRow}>
           <TouchableOpacity 
-            style={styles.qrButton}
+            style={[styles.actionButton, styles.qrButton]}
             onPress={async () => {
               if (permission?.status === 'undetermined') {
                 await requestPermission();
@@ -153,53 +203,68 @@ function MasterCode({ onActivated, navigation }) {
               }
             }}
           >
-            <MaterialIcons name="qr-code-scanner" size={32} color="white" />
-            <Text style={styles.qrButtonText}>ESCANEAR CÓDIGO QR</Text>
+            <MaterialIcons name="qr-code-scanner" size={40} color="white" />
+            <Text style={styles.actionButtonText}>ESCANEAR QR</Text>
           </TouchableOpacity>
-        )}
 
-        {showManualInput ? (
-          <View style={{ width: "100%", alignItems: "center" }}>
-            <View style={styles.inputContainer}>
-              <Ionicons name="key-outline" size={24} color="#222266" style={styles.icon} />
-              <TextInput
-                style={styles.input}
-                placeholder="CÓDIGO MASTER"
-                placeholderTextColor="#999"
-                value={code}
-                onChangeText={setCode}
-                autoCapitalize="characters"
-                autoCorrect={false}
-              />
-            </View>
-
-            <TouchableOpacity
-              style={[styles.button, loading && styles.buttonDisabled]}
-              onPress={handleActivate}
-              disabled={loading}
-            >
-              {loading ? (
-                <ActivityIndicator color="white" />
-              ) : (
-                <Text style={styles.buttonText}>ACTIVAR MANUALMENTE</Text>
-              )}
-            </TouchableOpacity>
-
-            <TouchableOpacity 
-              style={{ marginTop: 20 }}
-              onPress={() => setShowManualInput(false)}
-            >
-              <Text style={styles.linkText}>Volver al escáner QR</Text>
-            </TouchableOpacity>
-          </View>
-        ) : (
           <TouchableOpacity 
-            style={styles.manualLink}
+            style={[styles.actionButton, styles.manualButton]}
             onPress={() => setShowManualInput(true)}
           >
-            <Ionicons name="create-outline" size={18} color="#666" />
-            <Text style={styles.manualLinkText}>¿Problemas con la cámara? Ingrese el código aquí</Text>
+            <MaterialIcons name="dialpad" size={40} color="white" />
+            <Text style={styles.actionButtonText}>INGRESAR CÓDIGO</Text>
           </TouchableOpacity>
+        </View>
+
+        {showManualInput && (
+          <Modal
+            animationType="fade"
+            transparent={true}
+            visible={showManualInput}
+            onRequestClose={() => setShowManualInput(false)}
+          >
+            <View style={styles.modalOverlay}>
+              <View style={styles.modalContent}>
+                <Text style={styles.modalTitle}>Ingrese su Código</Text>
+                <Text style={styles.modalSubtitle}>Ingrese los 7 dígitos que figuran debajo del QR</Text>
+                
+                <View style={styles.inputContainer}>
+                  <Ionicons name="key-outline" size={24} color="#222266" style={styles.icon} />
+                  <TextInput
+                    style={styles.input}
+                    placeholder="Ej: 1234567"
+                    placeholderTextColor="#999"
+                    value={code}
+                    onChangeText={setCode}
+                    keyboardType="numeric"
+                    maxLength={15} // Permitimos más por si es el formato legacy
+                    autoFocus={true}
+                  />
+                </View>
+
+                <View style={styles.modalButtons}>
+                  <TouchableOpacity
+                    style={[styles.modalButton, styles.cancelButton]}
+                    onPress={() => setShowManualInput(false)}
+                  >
+                    <Text style={styles.cancelButtonText}>CANCELAR</Text>
+                  </TouchableOpacity>
+                  
+                  <TouchableOpacity
+                    style={[styles.modalButton, styles.confirmButton, loading && styles.buttonDisabled]}
+                    onPress={handleActivate}
+                    disabled={loading}
+                  >
+                    {loading ? (
+                      <ActivityIndicator color="white" />
+                    ) : (
+                      <Text style={styles.confirmButtonText}>ACTIVAR</Text>
+                    )}
+                  </TouchableOpacity>
+                </View>
+              </View>
+            </View>
+          </Modal>
         )}
 
         <Text style={styles.footerText}>Desit SA - Seguridad Integral</Text>
@@ -268,33 +333,95 @@ const styles = StyleSheet.create({
     marginBottom: 30,
     paddingHorizontal: 20,
   },
-  qrButton: {
-    backgroundColor: "#222266",
-    flexDirection: "column",
-    alignItems: "center",
-    justifyContent: "center",
-    paddingVertical: 30,
-    paddingHorizontal: 25,
-    borderRadius: 20,
-    marginBottom: 20,
+  buttonRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
     width: "100%",
+    paddingHorizontal: 10,
+    marginTop: 20,
+  },
+  actionButton: {
+    width: "48%",
+    height: 140,
+    borderRadius: 20,
+    justifyContent: "center",
+    alignItems: "center",
     elevation: 8,
     shadowColor: "#000",
     shadowOffset: { width: 0, height: 4 },
     shadowOpacity: 0.3,
     shadowRadius: 5,
   },
-  qrButtonText: {
+  qrButton: {
+    backgroundColor: "#222266",
+  },
+  manualButton: {
+    backgroundColor: "#0F76C4",
+  },
+  actionButtonText: {
     color: "white",
-    fontSize: 18,
+    fontSize: 14,
     fontFamily: "open-sans-bold",
     marginTop: 15,
-    letterSpacing: 1,
+    textAlign: "center",
+  },
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: "rgba(0,0,0,0.6)",
+    justifyContent: "center",
+    alignItems: "center",
+  },
+  modalContent: {
+    width: "85%",
+    backgroundColor: "white",
+    borderRadius: 20,
+    padding: 25,
+    alignItems: "center",
+    elevation: 10,
+  },
+  modalTitle: {
+    fontSize: 20,
+    fontFamily: "open-sans-bold",
+    color: "#222266",
+    marginBottom: 10,
+  },
+  modalSubtitle: {
+    fontSize: 14,
+    color: "#666",
+    textAlign: "center",
+    marginBottom: 20,
+  },
+  modalButtons: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    width: "100%",
+  },
+  modalButton: {
+    flex: 1,
+    height: 50,
+    borderRadius: 12,
+    justifyContent: "center",
+    alignItems: "center",
+    marginHorizontal: 5,
+  },
+  cancelButton: {
+    backgroundColor: "#EEE",
+  },
+  confirmButton: {
+    backgroundColor: "#222266",
+  },
+  cancelButtonText: {
+    color: "#666",
+    fontFamily: "open-sans-bold",
+  },
+  confirmButtonText: {
+    color: "white",
+    fontFamily: "open-sans-bold",
   },
   inputContainer: {
     flexDirection: "row",
     alignItems: "center",
-    backgroundColor: "white",
+    backgroundColor: "#F5F7FA",
     borderRadius: 12,
     borderWidth: 1,
     borderColor: "#DDD",
@@ -302,16 +429,17 @@ const styles = StyleSheet.create({
     marginBottom: 25,
     width: "100%",
     height: 60,
-    elevation: 2,
   },
   icon: {
     marginRight: 15,
   },
   input: {
     flex: 1,
-    fontSize: 18,
+    fontSize: 22,
     fontFamily: "open-sans-bold",
     color: "#333",
+    textAlign: "center",
+    letterSpacing: 2,
   },
   button: {
     backgroundColor: "#222266",
