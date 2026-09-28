@@ -26,6 +26,10 @@
 @rem Set local scope for the variables with windows NT shell
 if "%OS%"=="Windows_NT" setlocal
 
+@rem La caché del sandbox de Cursor supera 260 caracteres y ninja no compila.
+echo %GRADLE_USER_HOME% | findstr /I /C:"cursor-sandbox-cache" >nul
+if not errorlevel 1 set "GRADLE_USER_HOME=%USERPROFILE%\.gradle"
+
 set DIRNAME=%~dp0
 if "%DIRNAME%"=="" set DIRNAME=.
 @rem This is normally unused

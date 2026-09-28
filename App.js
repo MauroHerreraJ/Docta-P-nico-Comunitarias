@@ -510,7 +510,7 @@ function NoAuthorizedNavigation({ activeProduct, onAuthorized }) {
 }
 
 function ProductSpecificNavigation({ onReset, activeProduct }) {
-  const [productName, setProductName] = useState("Vigilantes");
+  const [productName, setProductName] = useState("Guardias");
   const [productKey, setProductKey] = useState(activeProduct || "vigilantes");
   const [logoUrl, setLogoUrl] = useState("https://i.imgur.com/aIYhRsN.png");
   const [isMultimediaEnabled, setIsMultimediaEnabled] = useState(false);
@@ -546,7 +546,7 @@ function ProductSpecificNavigation({ onReset, activeProduct }) {
         if (!product) return;
 
         setProductKey(product);
-        if (isVigiProduct(product)) setProductName("Vigilantes");
+        if (isVigiProduct(product)) setProductName("Guardias");
         else if (product.toLowerCase() === "ciudadanos") setProductName("Ciudadanos");
         else setProductName(product.charAt(0).toUpperCase() + product.slice(1));
       } catch (error) {

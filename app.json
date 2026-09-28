@@ -2,7 +2,7 @@
   "expo": {
     "name": "Docta Comunitarias",
     "slug": "villamaria",
-    "version": "1.0.2",
+    "version": "2.0.0",
     "orientation": "portrait",
     "icon": "./assets/adaptive-icon.png",
     "splash": {
@@ -67,6 +67,13 @@
       ],
       "expo-task-manager",
       "expo-audio",
+      [
+        "expo-speech-recognition",
+        {
+          "microphonePermission": "Vigicontrol usa el micrófono para dictar una novedad del turno.",
+          "speechRecognitionPermission": "Vigicontrol convierte lo que decís en el texto de la novedad."
+        }
+      ],
       "@sentry/react-native",
       "expo-status-bar",
       [
@@ -99,7 +106,8 @@
         "ACCESS_BACKGROUND_LOCATION",
         "FOREGROUND_SERVICE",
         "FOREGROUND_SERVICE_LOCATION",
-        "POST_NOTIFICATIONS"
+        "POST_NOTIFICATIONS",
+        "RECORD_AUDIO"
       ],
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",

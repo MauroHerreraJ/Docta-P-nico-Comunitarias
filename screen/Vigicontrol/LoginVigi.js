@@ -10,6 +10,7 @@ import {
   KeyboardAvoidingView,
   Platform,
   ScrollView,
+  Image,
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import {
@@ -34,7 +35,7 @@ import {
  * Recurrente:
  *   modo biométrico (desbloquea email guardado) O modo usuario → + password
  */
-export default function LoginVigi({ onLoggedIn, productName = "Vigilantes" }) {
+export default function LoginVigi({ onLoggedIn, productName = "Guardias" }) {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [deviceId, setDeviceId] = useState("");
@@ -292,7 +293,11 @@ export default function LoginVigi({ onLoggedIn, productName = "Vigilantes" }) {
         keyboardShouldPersistTaps="handled"
       >
         <View style={styles.header}>
-          <Ionicons name="shield-checkmark" size={48} color="#0F76C4" />
+          <Image
+            source={require("../../assets/LogoDoctaPanico.png")}
+            style={styles.logo}
+            resizeMode="contain"
+          />
           <Text style={styles.title}>{productName}</Text>
           <Text style={styles.subtitle}>Ingreso al dispositivo</Text>
         </View>
@@ -482,6 +487,10 @@ const styles = StyleSheet.create({
   header: {
     alignItems: "center",
     marginBottom: 20,
+  },
+  logo: {
+    width: 96,
+    height: 96,
   },
   title: {
     marginTop: 10,

@@ -1,4 +1,4 @@
-import { useCallback, useState } from "react";
+import { useCallback, useRef, useState } from "react";
 import {
   View,
   Text,
@@ -16,6 +16,22 @@ import { Ionicons } from "@expo/vector-icons";
 import { crearNovedadApp, getMisNovedadesApp } from "../../util/NuevaApi";
 import { formatHoraBA } from "../../util/horaBA";
 
+let speechApi = null;
+try {
+  speechApi = require("expo-speech-recognition");
+} catch {
+  speechApi = null;
+}
+
+function DictadoEventos({ onStart, onEnd, onResult, onError }) {
+  const { useSpeechRecognitionEvent } = speechApi;
+  useSpeechRecognitionEvent("start", onStart);
+  useSpeechRecognitionEvent("end", onEnd);
+  useSpeechRecognitionEvent("result", onResult);
+  useSpeechRecognitionEvent("error", onError);
+  return null;
+}
+
 function apiMessage(error, fallback) {
   const msg = error?.response?.data?.message;
   if (Array.isArray(msg)) return String(msg[0] || fallback);
@@ -28,6 +44,28 @@ export default function NovedadesTurno() {
   const [data, setData] = useState(null);
   const [texto, setTexto] = useState("");
   const [sending, setSending] = useState(false);
+  const [escuchando, setEscuchando] = useState(false);
+  const baseRef = useRef("");
+
+  const onDictadoStart = useCallback(() => setEscuchando(true), []);
+  const onDictadoEnd = useCallback(() => setEscuchando(false), []);
+  const onDictadoResult = useCallback((event) => {
+    const dicho = String(event.results?.[0]?.transcript || "").trim();
+    if (!dicho) return;
+    const base = baseRef.current;
+    setTexto([base, dicho].filter(Boolean).join(" ").slice(0, 2000));
+  }, []);
+  const onDictadoError = useCallback((event) => {
+    setEscuchando(false);
+    if (
+      event.error === "no-speech" ||
+      event.error === "aborted" ||
+      event.error === "speech-timeout"
+    ) {
+      return;
+    }
+    Alert.alert("No se pudo dictar", "Probá de nuevo o escribí la novedad.");
+  }, []);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -48,9 +86,45 @@ export default function NovedadesTurno() {
     }, [load]),
   );
 
+  const onDictar = async () => {
+    if (!puedeEscribir || sending) return;
+    const modulo = speechApi?.ExpoSpeechRecognitionModule;
+    if (!modulo) {
+      Alert.alert(
+        "Dictado",
+        "El reconocimiento de voz entra con la próxima compilación de la app.",
+      );
+      return;
+    }
+    if (escuchando) {
+      modulo.stop();
+      return;
+    }
+    try {
+      const perm = await modulo.requestPermissionsAsync();
+      if (!perm.granted) {
+        Alert.alert("Micrófono", "Hace falta el micrófono para dictar la novedad.");
+        return;
+      }
+      baseRef.current = String(texto || "").trim();
+      modulo.start({
+        lang: "es-AR",
+        interimResults: true,
+        continuous: false,
+      });
+    } catch {
+      setEscuchando(false);
+      Alert.alert(
+        "Dictado",
+        "El reconocimiento de voz entra con la próxima compilación de la app.",
+      );
+    }
+  };
+
   const onEnviar = async () => {
     const nota = String(texto || "").trim();
     if (!nota || sending) return;
+    if (escuchando) speechApi?.ExpoSpeechRecognitionModule?.stop?.();
     if (!data?.enCurso) {
       Alert.alert("Turno", "El turno no está en curso.");
       return;
@@ -77,9 +151,19 @@ export default function NovedadesTurno() {
     }
   };
 
+  const dictado = speechApi ? (
+    <DictadoEventos
+      onStart={onDictadoStart}
+      onEnd={onDictadoEnd}
+      onResult={onDictadoResult}
+      onError={onDictadoError}
+    />
+  ) : null;
+
   if (loading && !data) {
     return (
       <View style={styles.center}>
+        {dictado}
         <ActivityIndicator size="large" color="#8E44AD" />
       </View>
     );
@@ -93,6 +177,7 @@ export default function NovedadesTurno() {
       style={styles.screen}
       behavior={Platform.OS === "ios" ? "padding" : undefined}
     >
+      {dictado}
       <View style={styles.header}>
         <Text style={styles.titulo}>Libro de novedades</Text>
         <Text style={styles.sub} numberOfLines={2}>
@@ -128,13 +213,29 @@ export default function NovedadesTurno() {
           value={texto}
           onChangeText={setTexto}
           placeholder={
-            puedeEscribir ? "Anotá una novedad del turno" : "El turno no está en curso"
+            escuchando
+              ? "Hablá la novedad…"
+              : puedeEscribir
+                ? "Anotá o dictá una novedad"
+                : "El turno no está en curso"
           }
           placeholderTextColor="#9CA3AF"
           multiline
           editable={puedeEscribir && !sending}
           maxLength={2000}
         />
+        <TouchableOpacity
+          style={[
+            styles.mic,
+            escuchando && styles.micOn,
+            (!puedeEscribir || sending) && styles.btnOff,
+          ]}
+          onPress={onDictar}
+          disabled={!puedeEscribir || sending}
+          accessibilityLabel={escuchando ? "Detener dictado" : "Dictar novedad"}
+        >
+          <Ionicons name={escuchando ? "stop" : "mic"} size={20} color="#fff" />
+        </TouchableOpacity>
         <TouchableOpacity
           style={[styles.btn, (!puedeEscribir || !texto.trim() || sending) && styles.btnOff]}
           onPress={onEnviar}
@@ -214,6 +315,15 @@ const styles = StyleSheet.create({
     fontSize: 14,
     color: "#1A2332",
   },
+  mic: {
+    width: 44,
+    height: 44,
+    borderRadius: 12,
+    backgroundColor: "#8E44AD",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  micOn: { backgroundColor: "#DC2626" },
   btn: {
     backgroundColor: "#8E44AD",
     borderRadius: 12,
