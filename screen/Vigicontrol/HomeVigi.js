@@ -20,6 +20,7 @@ import {
   getMisNovedadesApp,
   getMisAccesosApp,
   getMiHombreVivoApp,
+  getGeoInterval,
   getStoredSession,
 } from "../../util/NuevaApi";
 import { formatHoraBA } from "../../util/horaBA";
@@ -264,7 +265,7 @@ function TarjetaModulo({ modulo, cantidad, onPress, s, m, ancha }) {
   );
 }
 
-function TarjetaVigiladorActivo({ activa, loading, s, m }) {
+function TarjetaVigiladorActivo({ activa, loading, geoMin, s, m }) {
   const enCurso = isTurnoEnCurso(activa);
   const tiene = Boolean(activa);
 
@@ -290,6 +291,9 @@ function TarjetaVigiladorActivo({ activa, loading, s, m }) {
                     activa.notas ? ` · ${activa.notas}` : ""
                   }`
                 : "Sin asignación programada"}
+          </Text>
+          <Text style={s.cardServicioSub} numberOfLines={1}>
+            {geoMin ? `Ubicación cada ${geoMin} min` : "Ubicación cada 15 min"}
           </Text>
         </View>
         <View
@@ -332,6 +336,7 @@ function HomeVigi({
   const [novedadesCount, setNovedadesCount] = useState(0);
   const [hombreVivoCount, setHombreVivoCount] = useState(0);
   const [accesosCount, setAccesosCount] = useState(0);
+  const [geoMin, setGeoMin] = useState(15);
 
   const escala = Math.max(0.8, Math.min(1.15, height / 780));
   const m = useMemo(() => (valor) => Math.round(valor * escala), [escala]);
@@ -350,7 +355,7 @@ function HomeVigi({
         if (!mounted) return;
         setPerfil(perfilDesdeSesion(session));
 
-        const [perfilRes, asigRes, despachoRes, rondasRes, novedadesRes, vivoRes, accesosRes] =
+        const [perfilRes, asigRes, despachoRes, rondasRes, novedadesRes, vivoRes, accesosRes, geoRes] =
           await Promise.all([
           getMyVigiladorProfile().catch((err) => {
             console.warn("[HomeVigi] perfil:", err?.message || err);
@@ -380,6 +385,10 @@ function HomeVigi({
             console.warn("[HomeVigi] accesos:", err?.message || err);
             return null;
           }),
+          getGeoInterval().catch((err) => {
+            console.warn("[HomeVigi] keep alive:", err?.message || err);
+            return null;
+          }),
         ]);
 
         if (!mounted) return;
@@ -404,6 +413,8 @@ function HomeVigi({
         setNovedadesCount((novedadesRes?.novedades || []).length);
         setHombreVivoCount((vivoRes?.marcas || []).length);
         setAccesosCount(Number(accesosRes?.hoy) || 0);
+        const minutos = Number(geoRes?.geoIntervalMin);
+        if (Number.isFinite(minutos) && minutos >= 1) setGeoMin(Math.round(minutos));
       } catch (error) {
         console.warn("[HomeVigi] load:", error?.message || error);
       } finally {
@@ -423,12 +434,13 @@ function HomeVigi({
       let alive = true;
       const refresh = async () => {
         try {
-          const [data, rondas, novedades, vivo, accesos] = await Promise.all([
+          const [data, rondas, novedades, vivo, accesos, geo] = await Promise.all([
             getMisDespachosApp(),
             getMisRondasApp().catch(() => null),
             getMisNovedadesApp().catch(() => null),
             getMiHombreVivoApp().catch(() => null),
             getMisAccesosApp().catch(() => null),
+            getGeoInterval().catch(() => null),
           ]);
           if (!alive) return;
           setPendientesCount(Number(data?.pendientesCount) || 0);
@@ -439,6 +451,10 @@ function HomeVigi({
           setNovedadesCount((novedades?.novedades || []).length);
           setHombreVivoCount((vivo?.marcas || []).length);
           setAccesosCount(Number(accesos?.hoy) || 0);
+          const minutos = Number(geo?.geoIntervalMin);
+          if (Number.isFinite(minutos) && minutos >= 1) {
+            setGeoMin(Math.round(minutos));
+          }
         } catch {
           // silencioso
         }
@@ -541,6 +557,7 @@ function HomeVigi({
           <TarjetaVigiladorActivo
             activa={activa}
             loading={loadingAsig}
+            geoMin={geoMin}
             s={s}
             m={m}
           />

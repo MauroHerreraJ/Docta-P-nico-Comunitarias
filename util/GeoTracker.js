@@ -2,7 +2,7 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 import * as Location from "expo-location";
 import * as TaskManager from "expo-task-manager";
 import { AppState } from "react-native";
-import { getStoredSession, pingGeo } from "./NuevaApi";
+import { getGeoInterval, getStoredSession, pingGeo } from "./NuevaApi";
 
 export const GEO_TASK_NAME = "vigicontrol-geo-tracking";
 const QUEUE_KEY = "@vigicontrol_geo_queue";
@@ -10,6 +10,8 @@ const FLAG_KEY = "@vigicontrol_geo_wanted";
 const INTERVAL_KEY = "@vigicontrol_geo_interval_min";
 const LAST_SENT_KEY = "@vigicontrol_geo_last_sent";
 const DEFAULT_MIN = 15;
+/** GPS. Balanced queda en ~100 m; High apunta a unos 10 m. */
+const GEO_ACCURACY = Location.Accuracy.High;
 const MAX_QUEUE = 250;
 
 let appliedMs = 0;
@@ -32,7 +34,9 @@ async function readIntervalMs() {
 
 let appStateSub = null;
 let fallbackTimer = null;
+let configTimer = null;
 let starting = false;
+const CONFIG_POLL_MS = 60 * 1000;
 
 async function readQueue() {
   try {
@@ -75,6 +79,19 @@ async function dueToSend() {
   const interval = await readIntervalMs();
   const last = Number((await AsyncStorage.getItem(LAST_SENT_KEY)) || 0);
   return !Number.isFinite(last) || Date.now() - last >= interval;
+}
+
+async function refreshIntervalFromServer() {
+  const session = await getStoredSession();
+  if (!session?.token) return;
+  try {
+    const data = await getGeoInterval();
+    if (data?.geoIntervalMin != null) {
+      await applyServerInterval(data.geoIntervalMin);
+    }
+  } catch (err) {
+    console.warn("[GeoTracker] intervalo remoto:", err?.message || err);
+  }
 }
 
 async function applyServerInterval(minutes) {
@@ -161,12 +178,27 @@ function stopFallbackTimer() {
   fallbackMs = 0;
 }
 
+function stopConfigTimer() {
+  if (configTimer) {
+    clearInterval(configTimer);
+    configTimer = null;
+  }
+}
+
+function ensureConfigTimer() {
+  if (configTimer) return;
+  configTimer = setInterval(() => {
+    void refreshIntervalFromServer();
+  }, CONFIG_POLL_MS);
+}
+
 async function tickForegroundFallback() {
   try {
     const wanted = await AsyncStorage.getItem(FLAG_KEY);
     if (wanted !== "1") return;
     const loc = await Location.getCurrentPositionAsync({
-      accuracy: Location.Accuracy.Balanced,
+      accuracy: GEO_ACCURACY,
+      mayShowUserSettingsDialog: true,
     });
     const payload = locToPayload(loc);
     if (payload) await flushAndSend(payload);
@@ -189,7 +221,8 @@ async function startNativeUpdates(intervalMs, { force = false } = {}) {
   if (running && !force && appliedMs === intervalMs) return;
   if (running) await Location.stopLocationUpdatesAsync(GEO_TASK_NAME);
   await Location.startLocationUpdatesAsync(GEO_TASK_NAME, {
-    accuracy: Location.Accuracy.Balanced,
+    accuracy: GEO_ACCURACY,
+    mayShowUserSettingsDialog: true,
     timeInterval: intervalMs,
     distanceInterval: 0,
     deferredUpdatesInterval: intervalMs,
@@ -212,6 +245,7 @@ export async function startGeoTracking() {
   try {
     await AsyncStorage.setItem(FLAG_KEY, "1");
     await requestPermissions();
+    await refreshIntervalFromServer();
     const intervalMs = await readIntervalMs();
     try {
       await startNativeUpdates(intervalMs);
@@ -219,6 +253,7 @@ export async function startGeoTracking() {
       console.warn("[GeoTracker] native updates:", err?.message || err);
     }
     ensureFallbackTimer(intervalMs);
+    ensureConfigTimer();
     void tickForegroundFallback();
 
     if (!appStateSub) {
@@ -238,6 +273,7 @@ export async function stopGeoTracking() {
   await AsyncStorage.setItem(FLAG_KEY, "0");
   appliedMs = 0;
   stopFallbackTimer();
+  stopConfigTimer();
   try {
     const running = await Location.hasStartedLocationUpdatesAsync(GEO_TASK_NAME);
     if (running) await Location.stopLocationUpdatesAsync(GEO_TASK_NAME);

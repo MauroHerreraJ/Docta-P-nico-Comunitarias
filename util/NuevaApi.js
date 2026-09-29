@@ -11,7 +11,7 @@ import * as Device from "expo-device";
 const USE_LOCAL = false;
 const LAN_IP = "192.168.0.112";
 const API_PORT = 4000;
-const PROD_URL = "https://desitvigicontrol-e2d546763e83.herokuapp.com";
+const PROD_URL = "https://doctacontrol-e7803a4382c9.herokuapp.com";
 
 function resolveBaseUrl() {
   if (!USE_LOCAL) return PROD_URL;
@@ -452,6 +452,17 @@ export async function cerrarRondaApp(rondaId) {
     {},
     { headers: APP_HEADERS },
   );
+  return data;
+}
+
+/** Minutos de keep alive que fijó el dashboard para este celular. */
+export async function getGeoInterval() {
+  const identity = await getDeviceIdentity();
+  const { data } = await api.get("/api/geo/intervalo", {
+    headers: {
+      "X-Device-Id": identity.deviceId || "",
+    },
+  });
   return data;
 }
 

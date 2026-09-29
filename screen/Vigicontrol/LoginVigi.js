@@ -20,6 +20,7 @@ import {
 } from "../../util/NuevaApi";
 import {
   authenticateBiometric,
+  clearEnrollment,
   getBiometricCapability,
   getEnrollment,
   saveEnrollment,
@@ -256,6 +257,33 @@ export default function LoginVigi({ onLoggedIn, productName = "Guardias" }) {
     }
   };
 
+  const onClearBiometric = () => {
+    Alert.alert(
+      "Quitar biometría",
+      "Se borra el usuario guardado en este teléfono. Después podés entrar con otro usuario y enrolar la biometría de nuevo.",
+      [
+        { text: "Cancelar", style: "cancel" },
+        {
+          text: "Quitar",
+          style: "destructive",
+          onPress: async () => {
+            try {
+              await clearEnrollment();
+            } catch (error) {
+              console.warn("[LoginVigi] clearEnrollment:", error?.message || error);
+            }
+            setHasEnrollment(false);
+            setEnrolledUsername("");
+            setUsername("");
+            setPassword("");
+            setBioUnlocked(false);
+            setAuthMode("user");
+          },
+        },
+      ],
+    );
+  };
+
   const switchMode = (mode) => {
     setAuthMode(mode);
     setPassword("");
@@ -427,6 +455,18 @@ export default function LoginVigi({ onLoggedIn, productName = "Guardias" }) {
             </Text>
           ) : null}
 
+          {hasEnrollment ? (
+            <TouchableOpacity
+              onPress={onClearBiometric}
+              disabled={loggingIn || enrollingBio}
+              style={styles.clearBioBtn}
+            >
+              <Text style={styles.clearBioText}>
+                Quitar biometría y usar otro usuario
+              </Text>
+            </TouchableOpacity>
+          ) : null}
+
           {!bioAvailable ? (
             <Text style={styles.bioWarn}>
               Biometría no disponible en este dispositivo.
@@ -537,6 +577,15 @@ const styles = StyleSheet.create({
     fontSize: 12,
     color: "#B45309",
     fontFamily: "open-sans",
+  },
+  clearBioBtn: {
+    marginTop: 8,
+    alignSelf: "flex-start",
+  },
+  clearBioText: {
+    fontSize: 12,
+    color: "#B45309",
+    fontFamily: "open-sans-bold",
   },
   deviceId: {
     marginTop: 4,
