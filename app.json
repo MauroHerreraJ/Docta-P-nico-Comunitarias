@@ -60,6 +60,9 @@
       "supportsTablet": true,
       "bundleIdentifier": "com.pedrodarrigo.DesitAppV33",
       "buildNumber": "2",
+      "associatedDomains": [
+        "applinks:docta-4-sm-front-dev.web.app"
+      ],
       "infoPlist": {
         "ITSAppUsesNonExemptEncryption": false
       }
@@ -71,7 +74,21 @@
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
         "backgroundColor": "#0066CC"
-      }
+      },
+      "intentFilters": [
+        {
+          "action": "VIEW",
+          "autoVerify": true,
+          "data": [
+            {
+              "scheme": "https",
+              "host": "docta-4-sm-front-dev.web.app",
+              "pathPrefix": "/q/"
+            }
+          ],
+          "category": ["BROWSABLE", "DEFAULT"]
+        }
+      ]
     },
     "web": {
       "favicon": "./assets/favicon.png"

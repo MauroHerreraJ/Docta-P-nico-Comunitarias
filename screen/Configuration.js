@@ -15,6 +15,7 @@ import { useNavigation, useRoute } from "@react-navigation/native";
 import { StyleSheet } from "react-native";
 import { useState, useEffect } from "react";
 import { postUserData, postToken, getPanicAppByCode, validateCredentials, registerDevice, lookupOnboardingCode, registerOnboarding } from "../util/Api";
+import { extractOnboardingCode } from "../util/onboardingCode";
 import { registerForPushNotificationsAsync } from "../util/Notifications";
 import { MaterialIcons, Ionicons } from "@expo/vector-icons";
 import { Dimensions } from "react-native";
@@ -84,7 +85,7 @@ const TERMS_AND_CONDITIONS = {
   ]
 };
 
-function Configuration({ onAuthorized, activeProduct, initialData }) {
+function Configuration({ onAuthorized, activeProduct, initialData, initialOnboardingCode }) {
   const { width, height } = Dimensions.get("window");
   const navigation = useNavigation();
   const route = useRoute();
@@ -146,8 +147,11 @@ function Configuration({ onAuthorized, activeProduct, initialData }) {
       
       setIsTermsAccepted(false);
       setCurrentStep(initialStep);
+    } else if (initialOnboardingCode) {
+      const extracted = extractOnboardingCode(initialOnboardingCode);
+      if (extracted) setOnboardingCode(extracted);
     }
-  }, [initialData, route.params]);
+  }, [initialData, route.params, initialOnboardingCode]);
 
   // Estados para el Scanner de QR con expo-camera
   const [permission, requestPermission] = useCameraPermissions();
@@ -162,9 +166,6 @@ function Configuration({ onAuthorized, activeProduct, initialData }) {
   const handleBarCodeScanned = ({ type, data }) => {
     if (scanned) return;
     setScanned(true);
-    
-    // Normalización: quedarse solo con los dígitos
-    const digitsOnly = data.replace(/\D/g, "");
 
     try {
       // Intento 1: ¿Es el formato JSON legacy?
@@ -182,16 +183,17 @@ function Configuration({ onAuthorized, activeProduct, initialData }) {
           return;
         }
       } catch (e) {
-        // No es JSON, seguimos con la validación de 7 dígitos
+        // No es JSON, seguimos con número o link Docta 4
       }
 
-      // Intento 2: ¿Es un código de 7 dígitos para Docta 4?
-      if (digitsOnly.length === 7) {
-        setOnboardingCode(digitsOnly);
+      // Intento 2: número de 7 dígitos (sticker viejo) o link /q/XXXXXXX (sticker nuevo)
+      const extracted = extractOnboardingCode(data);
+      if (extracted) {
+        setOnboardingCode(extracted);
         setIsScannerVisible(false);
-        Alert.alert("Éxito", `Código ${digitsOnly} detectado.`);
+        Alert.alert("Éxito", `Código ${extracted} detectado.`);
       } else {
-        Alert.alert("Error", "El código escaneado no es válido. Debe tener 7 dígitos o ser un QR de configuración.");
+        Alert.alert("Error", "El código escaneado no es válido. Debe ser el número de 7 dígitos o el QR con el link de Docta.");
       }
     } catch (error) {
       console.error("Error al procesar QR:", error);
@@ -203,8 +205,8 @@ function Configuration({ onAuthorized, activeProduct, initialData }) {
   //console.log(altoBox);
 
   useEffect(() => {
-    const digitsOnly = onboardingCode.replace(/\D/g, "");
-    const isDocta4Flow = digitsOnly.length === 7;
+    const digitsOnly = extractOnboardingCode(onboardingCode);
+    const isDocta4Flow = !!digitsOnly;
     const isLegacyFlow = licencias.panicAppCode && 
                         licencias.panicAppCode !== "legacy" && 
                         licencias.targetDeviceId && 
@@ -254,10 +256,18 @@ function Configuration({ onAuthorized, activeProduct, initialData }) {
       try {
         setIsLoading(true);
         
+        let tokenPush = null;
+        try {
+          tokenPush = await registerForPushNotificationsAsync();
+          console.log("Token push obtenido para Docta 4 registration:", tokenPush);
+        } catch (tokenError) {
+          console.warn("No se pudo obtener el token push antes del onboarding:", tokenError);
+        }
+
         const registerData = {
           onboardingToken: onboardingInfo.onboardingToken,
           profile: userProfile,
-          fcm_token: null, 
+          fcm_token: tokenPush, 
           plataforma: Platform.OS,
           app_version: Constants.expoConfig?.version || "3.3.0",
           modelo: `${Device.brand} ${Device.modelName}`
@@ -364,6 +374,14 @@ console.log("¿Es accepted?:", result?.licenseCreated?.status === "accepted");
           try {
             console.log("🚀 Iniciando registro de dispositivo en DOCTA 4...");
             
+            let tokenPush = null;
+            try {
+              tokenPush = await registerForPushNotificationsAsync();
+              console.log("Token push obtenido para registerDevice legacy/manual:", tokenPush);
+            } catch (tokenError) {
+              console.warn("No se pudo obtener el token push:", tokenError);
+            }
+
             // Si el numberId es "auto", le decimos al servidor que asigne una libre
             const finalAccountNumber = licencias.numberId === "auto" ? "auto" : String(licencias.numberId);
             
@@ -372,7 +390,7 @@ console.log("¿Es accepted?:", result?.licenseCreated?.status === "accepted");
               municipality_id: panicAppData?.municipality?.id || "68ed14bacb9f182f98a06c28", 
               account_number: finalAccountNumber,
               target_device_id: String(licencias.targetDeviceId),
-              fcm_token: null,
+              fcm_token: tokenPush,
               plataforma: Platform.OS,
               app_version: Constants.expoConfig?.version || "1.0.0",
               modelo: `${Device.brand} ${Device.modelName}`,
@@ -420,9 +438,9 @@ console.log("¿Es accepted?:", result?.licenseCreated?.status === "accepted");
 
   const nextStep = async () => {
     // Si tenemos un código de 7 dígitos, usamos el flujo de Onboarding Docta 4
-    const digitsOnly = onboardingCode.replace(/\D/g, "");
+    const digitsOnly = extractOnboardingCode(onboardingCode);
     
-    if (digitsOnly.length === 7) {
+    if (digitsOnly) {
       try {
         setIsLoading(true);
         console.log("Iniciando lookup para código:", digitsOnly);
@@ -523,15 +541,23 @@ console.log("¿Es accepted?:", result?.licenseCreated?.status === "accepted");
               <TouchableOpacity 
                 style={styles.qrButton}
                 onPress={async () => {
-                  if (permission?.status === 'undetermined') {
-                    await requestPermission();
-                  } else if (permission?.granted) {
+                  const { granted, canAskAgain } = await requestPermission();
+                  if (granted) {
                     setIsScannerVisible(true);
                   } else {
-                    Alert.alert(
-                      "Permiso denegado", 
-                      "Se necesita acceso a la cámara para escanear el código QR."
-                    );
+                    if (!canAskAgain) {
+                      Alert.alert(
+                        "Cámara Bloqueada",
+                        "Has denegado el acceso a la cámara permanentemente. Por favor, ve a los Ajustes de tu teléfono y activa el permiso manualmente para Docta.",
+                        [{ text: "OK" }]
+                      );
+                    } else {
+                      Alert.alert(
+                        "Permiso Denegado",
+                        "Se necesita acceso a la cámara para escanear el código QR.",
+                        [{ text: "OK" }]
+                      );
+                    }
                   }
                 }}
               >

@@ -14,10 +14,11 @@ import {
 } from "react-native";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { activateMasterCode, getPanicAppByCode, lookupOnboardingCode } from "../util/Api";
+import { extractOnboardingCode } from "../util/onboardingCode";
 import { Ionicons, MaterialIcons } from "@expo/vector-icons";
 import { CameraView, useCameraPermissions } from 'expo-camera';
 
-function MasterCode({ onActivated, navigation }) {
+function MasterCode({ onActivated, navigation, initialCode }) {
   const [code, setCode] = useState("");
   const [loading, setLoading] = useState(false);
   const [showManualInput, setShowManualInput] = useState(false);
@@ -27,13 +28,21 @@ function MasterCode({ onActivated, navigation }) {
   const [isScannerVisible, setIsScannerVisible] = useState(false);
   const [scanned, setScanned] = useState(false);
 
-  const processMasterCode = async (inputCode) => {
-    // Normalización: quedarse solo con los dígitos si es un posible alias de Docta 4
-    const digitsOnly = inputCode.replace(/\D/g, "");
-    const cleanCode = inputCode.trim().toUpperCase();
+  // Auto-procesar código inicial (Deep Link)
+  React.useEffect(() => {
+    if (initialCode) {
+      console.log("🚀 Auto-procesando código inicial:", initialCode);
+      processMasterCode(initialCode, { silent: true });
+    }
+  }, [initialCode]);
+
+  const processMasterCode = async (inputCode, options = {}) => {
+    console.log("Processing code:", inputCode);
+    const cleanCode = String(inputCode || "").trim();
+    const digitsOnly = extractOnboardingCode(cleanCode);
     
-    // CASO 1: Alias de 7 dígitos (Docta 4 Onboarding)
-    if (digitsOnly.length === 7) {
+    // CASO 1: Alias de 7 dígitos (Docta 4 Onboarding) — número o link /q/
+    if (digitsOnly && digitsOnly.length === 7) {
       setLoading(true);
       try {
         console.log("Iniciando lookup para alias Docta 4:", digitsOnly);
@@ -49,17 +58,20 @@ function MasterCode({ onActivated, navigation }) {
           };
           
           await AsyncStorage.setItem("@master_config", JSON.stringify(masterData));
-          
-          Alert.alert("Éxito", `Código reconocido para ${result.municipality.name}.`, [
-            { 
-              text: "Continuar", 
-              onPress: () => onActivated("docta_comunitarias", { 
-                initialStep: 2,
-                masterConfig: masterData,
-                onboardingInfo: result
-              }) 
-            }
-          ]);
+
+          const goToRegister = () => onActivated("docta_comunitarias", { 
+            initialStep: 2,
+            masterConfig: masterData,
+            onboardingInfo: result
+          });
+
+          if (options.silent) {
+            goToRegister();
+          } else {
+            Alert.alert("Éxito", `Código reconocido para ${result.municipality.name}.`, [
+              { text: "Continuar", onPress: goToRegister }
+            ]);
+          }
           return true;
         } else {
           Alert.alert("Sin cupo", result.detail || "No quedan licencias en este equipo.");
@@ -80,7 +92,8 @@ function MasterCode({ onActivated, navigation }) {
     }
 
     // CASO 2: Formato Interno PRODUCTO-MUNICIPIO-EQUIPO (ej: COMU-0CBD-1005)
-    const parts = cleanCode.split("-");
+    const upperCode = cleanCode.toUpperCase();
+    const parts = upperCode.split("-");
     
     if (parts.length === 3) {
       const product = parts[0] === "COMU" ? "docta_panico" : parts[0].toLowerCase();
@@ -194,12 +207,23 @@ function MasterCode({ onActivated, navigation }) {
           <TouchableOpacity 
             style={[styles.actionButton, styles.qrButton]}
             onPress={async () => {
-              if (permission?.status === 'undetermined') {
-                await requestPermission();
-              } else if (permission?.granted) {
+              const { granted, canAskAgain } = await requestPermission();
+              if (granted) {
                 setIsScannerVisible(true);
               } else {
-                Alert.alert("Permiso denegado", "Se necesita acceso a la cámara.");
+                if (!canAskAgain) {
+                  Alert.alert(
+                    "Cámara Bloqueada",
+                    "Has denegado el acceso a la cámara permanentemente. Por favor, ve a los Ajustes de tu teléfono y activa el permiso manualmente para Docta.",
+                    [{ text: "OK" }]
+                  );
+                } else {
+                  Alert.alert(
+                    "Permiso Denegado",
+                    "Se necesita acceso a la cámara para escanear el código QR.",
+                    [{ text: "OK" }]
+                  );
+                }
               }
             }}
           >

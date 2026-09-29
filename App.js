@@ -10,10 +10,12 @@ import { NavigationContainer } from "@react-navigation/native";
 import { createNativeStackNavigator } from "@react-navigation/native-stack";
 import { createBottomTabNavigator } from "@react-navigation/bottom-tabs";
 import { Ionicons } from "@expo/vector-icons";
-import { Image, Modal, View, Text, TouchableOpacity, StyleSheet, Alert, Animated } from "react-native";
+import { Image, Modal, View, Text, TouchableOpacity, StyleSheet, Alert, Animated, Platform } from "react-native";
 import { useFonts } from "expo-font";
 import * as SplashScreen from "expo-splash-screen";
 import { useEffect, useState, useRef } from "react";
+import * as Linking from 'expo-linking';
+import * as Application from 'expo-application';
 
 // Mantener el Splash Screen visible mientras se cargan los recursos
 SplashScreen.preventAutoHideAsync().catch(() => {
@@ -28,8 +30,9 @@ import Welcome from "./screen/Welcome";
 import MasterCode from "./screen/MasterCode";
 import Multimedia from "./screen/Multimedia";
 import { getPanicAppByCode, registerNotificationToken, onUnauthorized } from "./util/Api";
+import { extractOnboardingCode } from "./util/onboardingCode";
 import { registerForPushNotificationsAsync } from "./util/Notifications";
-// import * as Notifications from 'expo-notifications';
+import * as Notifications from 'expo-notifications';
 import * as Updates from 'expo-updates';
 
 const Stack = createNativeStackNavigator();
@@ -365,7 +368,7 @@ function AuthorizedNavigation({ activeProduct }) {
   );
 }
 
-function NoAuthorizedNavigation({ activeProduct, onAuthorized, activationData }) {
+function NoAuthorizedNavigation({ activeProduct, onAuthorized, activationData, initialOnboardingCode }) {
   const isDocta = activeProduct === "docta_panico" || activeProduct === "docta_comunitarias";
   const initialRoute = isDocta ? "Configuration" : "Welcome";
   
@@ -407,6 +410,7 @@ function NoAuthorizedNavigation({ activeProduct, onAuthorized, activationData })
             activeProduct={activeProduct}
             onAuthorized={onAuthorized}
             initialData={activationData}
+            initialOnboardingCode={initialOnboardingCode}
           />
         )}
       </BottomTabs.Screen>
@@ -617,6 +621,7 @@ function App() {
   const [hasMasterCode, setHasMasterCode] = useState(false);
   const [activeProduct, setActiveProduct] = useState(null);
   const [activationData, setActivationData] = useState(null); // Nuevo: Datos del flujo maestro
+  const [deepLinkCode, setDeepLinkCode] = useState(null);
 
   const handleActivated = (product, extraData = null) => {
     setActiveProduct(product);
@@ -628,7 +633,6 @@ function App() {
   const [showEventModal, setShowEventModal] = useState(false);
   const [eventData, setEventData] = useState(null);
 
-  /* 🚫 NOTIFICACIONES ANULADAS TEMPORALMENTE
   useEffect(() => {
     // Función para normalizar y mostrar los datos de la notificación
     const handleEventNotification = (content) => {
@@ -664,13 +668,18 @@ function App() {
 
     // Registro de notificaciones al iniciar si ya está autorizado
     const setupNotifications = async () => {
-      const data = await AsyncStorage.getItem("@licencias");
-      if (data) {
-        const parsedData = JSON.parse(data);
-        const licenseCode = parsedData.result?.licenseCreated?.code;
-        if (licenseCode) {
-          registerForPushNotificationsAsync(licenseCode).then(token => setExpoPushToken(token));
+      try {
+        const specificKey = getStorageKey(activeProduct);
+        const data = await AsyncStorage.getItem(specificKey);
+        if (data) {
+          const parsedData = JSON.parse(data);
+          const licenseCode = parsedData.result?.licenseCreated?.code;
+          if (licenseCode) {
+            registerForPushNotificationsAsync(licenseCode).then(token => setExpoPushToken(token));
+          }
         }
+      } catch (e) {
+        console.warn("Error en setup de notificaciones:", e);
       }
     };
     
@@ -686,7 +695,7 @@ function App() {
     const responseListener = Notifications.addNotificationResponseReceivedListener(response => {
       console.log("Notificación tocada:", response);
       if (response && response.notification) {
-        handleEventNotification(notification.request.content);
+        handleEventNotification(response.notification.request.content);
       }
     });
 
@@ -694,7 +703,8 @@ function App() {
     const pushTokenListener = Notifications.addPushTokenListener(async ({ data: token }) => {
       console.log("El token de notificación ha cambiado:", token);
       try {
-        const data = await AsyncStorage.getItem("@licencias");
+        const specificKey = getStorageKey(activeProduct);
+        const data = await AsyncStorage.getItem(specificKey);
         if (data) {
           const parsedData = JSON.parse(data);
           const licenseCode = parsedData.result?.licenseCreated?.code;
@@ -714,7 +724,6 @@ function App() {
       pushTokenListener.remove();
     };
   }, []);
-  */
 
   useEffect(() => {
     // Suscribirse a errores de autenticación (401)
@@ -787,6 +796,34 @@ function App() {
             setActiveProduct(null);
           }
         }
+
+        // App Link de arranque (app cerrada) + Install Referrer de Play (primera instalación)
+        try {
+          const initialUrl = await Linking.getInitialURL();
+          const codeFromLink = extractOnboardingCode(initialUrl);
+          if (codeFromLink) {
+            console.log("✅ Código extraído de App Link inicial:", codeFromLink);
+            setDeepLinkCode(codeFromLink);
+          } else if (Platform.OS === "android") {
+            const referrerChecked = await AsyncStorage.getItem("@install_referrer_checked");
+            if (!referrerChecked) {
+              try {
+                const referrer = await Application.getInstallReferrerAsync();
+                console.log("📦 Install Referrer de Play:", referrer);
+                const codeFromReferrer = extractOnboardingCode(referrer);
+                if (codeFromReferrer) {
+                  console.log("✅ Código extraído de Install Referrer:", codeFromReferrer);
+                  setDeepLinkCode(codeFromReferrer);
+                }
+              } catch (refError) {
+                console.warn("No se pudo leer Install Referrer:", refError?.message || refError);
+              }
+              await AsyncStorage.setItem("@install_referrer_checked", "1");
+            }
+          }
+        } catch (linkError) {
+          console.warn("Error leyendo App Link / Referrer:", linkError);
+        }
       } catch (e) {
         console.warn("❌ Error durante la preparación:", e);
       } finally {
@@ -796,6 +833,31 @@ function App() {
     prepare();
   }, []);
 
+  useEffect(() => {
+    const handleDeepLink = (url) => {
+      if (!url) return;
+      console.log("🔗 Deep Link detectado:", url);
+      const code = extractOnboardingCode(url);
+      if (code) {
+        console.log("✅ Código extraído de Deep Link:", code);
+        setDeepLinkCode(code);
+      }
+    };
+
+    // 1. Manejar URL inicial (si la app estaba cerrada)
+    Linking.getInitialURL().then(url => {
+      if (url) handleDeepLink(url);
+    });
+
+    // 2. Escuchar cambios de URL (si la app estaba en segundo plano)
+    const subscription = Linking.addEventListener('url', (event) => {
+      handleDeepLink(event.url);
+    });
+
+    return () => {
+      subscription.remove();
+    };
+  }, []);
 
   useEffect(() => {
     if (fontsLoaded && appIsReady) {
@@ -829,6 +891,7 @@ function App() {
                   <MasterCode 
                     {...props} 
                     onActivated={handleActivated} 
+                    initialCode={deepLinkCode}
                   />
                 )}
               </Stack.Screen>
@@ -845,6 +908,7 @@ function App() {
                     {...props} 
                     activeProduct={activeProduct}
                     activationData={activationData}
+                    initialOnboardingCode={deepLinkCode}
                     onAuthorized={() => setIsAuthorized(true)}
                   />
                 )}

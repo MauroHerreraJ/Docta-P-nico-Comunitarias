@@ -226,7 +226,10 @@ export const checkDeviceStatus = async () => {
     const api = await getEndpoints();
     const token = await getAuthToken();
     const response = await axios.get(api.status, {
-      headers: { Authorization: `Bearer ${token}` }
+      headers: { 
+        Authorization: `Bearer ${token}`,
+        "X-Docta-App-Key": X_DOCTA_APP_KEY
+      }
     });
     return response.data;
   } catch (error) {
@@ -300,7 +303,8 @@ export const sendPanicDocta4 = async (eventData) => {
     const response = await axios.post(api.panic, payload, {
       headers: { 
         Authorization: `Bearer ${token}`,
-        "Content-Type": "application/json"
+        "Content-Type": "application/json",
+        "X-Docta-App-Key": X_DOCTA_APP_KEY
       }
     });
     
@@ -370,6 +374,7 @@ export const uploadChatAttachment = async (fileUri, type = "imagen") => {
       headers: {
         Authorization: `Bearer ${token}`,
         "Content-Type": "multipart/form-data",
+        "X-Docta-App-Key": X_DOCTA_APP_KEY
       },
     });
     return response.data;
@@ -395,7 +400,10 @@ export const sendChatMessage = async (msgData) => {
     };
 
     const response = await axios.post(api.chatSend, payload, {
-      headers: { Authorization: `Bearer ${token}` }
+      headers: { 
+        Authorization: `Bearer ${token}`,
+        "X-Docta-App-Key": X_DOCTA_APP_KEY
+      }
     });
     return response.data;
   } catch (error) {
@@ -412,7 +420,10 @@ export const fetchChatMessages = async (desdeSecuencia = 0) => {
     const api = await getEndpoints();
     const token = await getAuthToken();
     const response = await axios.get(`${api.chatRead}?desde_secuencia=${desdeSecuencia}`, {
-      headers: { Authorization: `Bearer ${token}` }
+      headers: { 
+        Authorization: `Bearer ${token}`,
+        "X-Docta-App-Key": X_DOCTA_APP_KEY
+      }
     });
     return response.data;
   } catch (error) {
@@ -474,15 +485,34 @@ export const registerNotificationToken = async (licenseCode, fcmToken) => {
   try {
     if (fcmToken === "dummy-fcm") return { success: true };
     const api = await getEndpoints();
-    const response = await axios.post(api.notification, {
-      licenseCode,
-      fcmToken,
-    }, {
-      headers: {
-        "Content-Type": "application/json",
-      },
-    });
-    return response.data;
+    const token = await getAuthToken();
+    const isDocta4 = api.fcm !== undefined;
+
+    if (isDocta4) {
+      console.log("🚀 Registrando token FCM en DOCTA 4...");
+      const response = await axios.post(api.fcm, {
+        fcm_token: fcmToken
+      }, {
+        headers: { 
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json",
+          "X-Docta-App-Key": X_DOCTA_APP_KEY
+        }
+      });
+      return response.data;
+    } else {
+      // Flujo Legacy
+      console.log("🚀 Registrando token Push en Servidor Legacy...");
+      const response = await axios.post(api.notification, {
+        licenseCode,
+        fcmToken,
+      }, {
+        headers: {
+          "Content-Type": "application/json",
+        },
+      });
+      return response.data;
+    }
   } catch (error) {
     console.error("Error registrando el token en el servidor:", error);
     throw error;
