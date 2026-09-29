@@ -7,6 +7,7 @@ import { useFocusEffect } from "@react-navigation/native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { deleteLicenseAccount } from "../util/Api";
+import AsyncStorageDumpButton from "../components/AsyncStorageDumpButton";
 
 function User({ navigation }) {
   const [licencia, setLicencia] = useState(null);
@@ -291,6 +292,11 @@ function User({ navigation }) {
             </Text>
           </TouchableOpacity>
           <Text style={styles.textImage}>Version 6.0.1 Docta Comunitarias</Text>
+
+          <AsyncStorageDumpButton
+            label="VER ASYNCSTORAGE"
+            buttonStyle={{ marginTop: 16, marginBottom: 12, padding: 14 }}
+          />
 
           <TouchableOpacity
             style={styles.deleteButton}
