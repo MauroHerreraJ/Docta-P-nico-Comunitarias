@@ -6,7 +6,7 @@ buildscript {
     mavenCentral()
   }
   dependencies {
-        classpath 'com.google.gms:google-services:4.4.1'
+        classpath 'com.google.gms:google-services:4.4.4'
     classpath('com.android.tools.build:gradle')
     classpath('com.facebook.react:react-native-gradle-plugin')
     classpath('org.jetbrains.kotlin:kotlin-gradle-plugin')
@@ -19,24 +19,7 @@ allprojects {
     mavenCentral()
     maven { url 'https://www.jitpack.io' }
   }
-
-  // Pin BouncyCastle: evita rango [1.81,1.82) que fuerza listar maven-metadata.xml
-  configurations.all {
-    resolutionStrategy {
-      force 'org.bouncycastle:bcprov-jdk15to18:1.81'
-      force 'org.bouncycastle:bcutil-jdk15to18:1.81'
-    }
-  }
 }
 
 apply plugin: "expo-root-project"
 apply plugin: "com.facebook.react.rootproject"
-
-// Evita OOM Metaspace en lintVital* de módulos Expo / RN (sin tocar lint DSL tarde).
-gradle.taskGraph.whenReady { graph ->
-  graph.allTasks.findAll { task ->
-    task.name.toLowerCase().contains("lintvital")
-  }.each { task ->
-    task.enabled = false
-  }
-}

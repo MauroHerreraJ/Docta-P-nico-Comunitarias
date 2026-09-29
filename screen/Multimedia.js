@@ -1,40 +1,157 @@
-import React, { useState, useRef, useEffect } from "react";
+import React, { useState, useRef, useEffect, useCallback } from "react";
 import {
   StyleSheet,
   View,
   Text,
   TextInput,
   TouchableOpacity,
-  ScrollView,
+  FlatList,
   Alert,
   ActivityIndicator,
   KeyboardAvoidingView,
   Platform,
   Image,
   Animated,
+  ScrollView,
+  PanResponder,
+  Vibration,
+  Keyboard,
+  BackHandler,
 } from "react-native";
 import { Ionicons, MaterialIcons } from "@expo/vector-icons";
+import { useNavigation, useFocusEffect } from "@react-navigation/native";
 import * as ImagePicker from "expo-image-picker";
 import { 
   useAudioRecorder, 
   useAudioRecorderState, 
   requestRecordingPermissionsAsync,
-  useAudioPlayer 
+  useAudioPlayer,
+  useAudioPlayerStatus,
+  setAudioModeAsync
 } from "expo-audio";
 import AsyncStorage from "@react-native-async-storage/async-storage";
-import { savePost } from "../util/Api";
+import { 
+  savePost, 
+  sendChatMessage, 
+  fetchChatMessages, 
+  uploadChatAttachment, 
+  generateUUID 
+} from "../util/Api";
 
-function Multimedia({ onFinalize }) {
+// 🎵 Sub-componente para reproducir audios en el chat
+const AudioMessage = ({ uri, isMine }) => {
+  const player = useAudioPlayer(uri);
+  const status = useAudioPlayerStatus(player);
+
+  useEffect(() => {
+    player.loop = false; // Asegurar que no esté en bucle
+  }, [player]);
+
+  useEffect(() => {
+    if (status.didJustFinish) {
+      player.pause();
+      player.seekTo(0);
+    }
+  }, [status.didJustFinish]);
+
+  const handlePlayPause = async () => {
+    if (status.playing) {
+      player.pause();
+    } else {
+      // 🔊 Forzar salida por altavoz antes de reproducir
+      try {
+        await setAudioModeAsync({
+          allowsRecording: false,
+          playsInSilentMode: true,
+        });
+      } catch (e) {
+        console.warn("Error configurando audio para altavoz:", e);
+      }
+      player.play();
+    }
+  };
+
+  return (
+    <View style={styles.audioBubbleContent}>
+      <TouchableOpacity 
+        onPress={handlePlayPause}
+        style={styles.playButton}
+      >
+        <Ionicons name={status.playing ? "pause" : "play"} size={24} color="#222266" />
+      </TouchableOpacity>
+      <View style={styles.audioInfo}>
+        <View style={styles.waveformPlaceholder}>
+          <View style={[styles.waveformBar, { height: 10 }]} />
+          <View style={[styles.waveformBar, { height: 20 }]} />
+          <View style={[styles.waveformBar, { height: 15 }]} />
+          <View style={[styles.waveformBar, { height: 25 }]} />
+          <View style={[styles.waveformBar, { height: 10 }]} />
+        </View>
+        <Text style={styles.audioDuration}>
+          {status.playing ? "Reproduciendo..." : "Audio"}
+        </Text>
+      </View>
+      <Ionicons name="mic" size={20} color={isMine ? "#222266" : "#999"} style={{ marginLeft: 5 }} />
+    </View>
+  );
+};
+
+function Multimedia({ onFinalize, panicId }) {
+  const navigation = useNavigation();
+  const inputRef = useRef(null);
   const [text, setText] = useState("");
   const [images, setImages] = useState([]);
-  const [loading, setLoading] = useState({ text: false, image: false, audio: false });
+  const [messages, setMessages] = useState([]);
+  const [lastSequence, setLastSequence] = useState(0);
+  const [loading, setLoading] = useState({ text: false, image: false, audio: false, messages: false });
   const [audioUri, setAudioUri] = useState(null);
   const [recordingStartTime, setRecordingStartTime] = useState(null);
+  const [recordingDuration, setRecordingDuration] = useState(0);
+  const [isCancelling, setIsCancelling] = useState(false);
   
-  const recordingTimer = useRef(null);
-  const waveformAnim = useRef(new Animated.Value(0)).current;
+  // Refs para evitar cierres obsoletos en PanResponder
+  const recordingStartTimeRef = useRef(null);
+  const isRecordingRef = useRef(false);
 
-  // Configuración manual del grabador de audio
+  const recordingTimer = useRef(null);
+  const durationInterval = useRef(null);
+  const isPreparing = useRef(false);
+  const pollTimer = useRef(null);
+  const wasFocusedBeforeRecording = useRef(false);
+  const flatListRef = useRef(null);
+  const waveformAnim = useRef(new Animated.Value(0)).current;
+  const micScale = useRef(new Animated.Value(1)).current;
+  const cancelTranslateX = useRef(new Animated.Value(0)).current;
+
+  // Manejar botón de atrás del dispositivo
+  useFocusEffect(
+    useCallback(() => {
+      const onBackPress = () => {
+        Alert.alert(
+          "¿Abandonar Multimedia?",
+          "Si sale de esta pantalla, no podrá adjuntar más información a este reporte.",
+          [
+            { text: "Continuar Reportando", style: "cancel", onPress: () => {} },
+            { 
+              text: "Salir", 
+              style: "destructive", 
+              onPress: () => {
+                if (typeof onFinalize === 'function') onFinalize();
+                navigation.navigate("Desit");
+              } 
+            },
+          ]
+        );
+        return true;
+      };
+
+      const subscription = BackHandler.addEventListener("hardwareBackPress", onBackPress);
+
+      return () => subscription.remove();
+    }, [onFinalize, navigation])
+  );
+
+  // Configuración del grabador de audio
   const audioRecorder = useAudioRecorder({
     extension: '.m4a',
     sampleRate: 44100,
@@ -43,25 +160,103 @@ function Multimedia({ onFinalize }) {
   });
 
   const { isRecording } = useAudioRecorderState(audioRecorder);
-
-  // Reproductor para oír el audio grabado
   const player = useAudioPlayer(audioUri);
 
-  // Animación del espectro
+  // Sincronizar refs con el estado para que el PanResponder los vea
+  useEffect(() => {
+    isRecordingRef.current = isRecording;
+    // Si empezamos a grabar y el teclado estaba abierto, nos aseguramos de mantener el foco
+    if (isRecording && wasFocusedBeforeRecording.current) {
+      inputRef.current?.focus();
+    }
+  }, [isRecording]);
+
+  useEffect(() => {
+    recordingStartTimeRef.current = recordingStartTime;
+  }, [recordingStartTime]);
+
+  // PanResponder para el gesto de deslizar para cancelar
+  const panResponder = useRef(
+    PanResponder.create({
+      onStartShouldSetPanResponder: () => true,
+      onMoveShouldSetPanResponder: () => true,
+      onPanResponderGrant: () => {
+        // Guardamos si el teclado estaba abierto antes de empezar
+        wasFocusedBeforeRecording.current = inputRef.current?.isFocused();
+        
+        // Solo intentamos mantener el foco si ya estaba enfocado
+        if (wasFocusedBeforeRecording.current) {
+          setTimeout(() => {
+            inputRef.current?.focus();
+          }, 10);
+        }
+        
+        if (!isPreparing.current && !recordingStartTimeRef.current) {
+          startRecording();
+        }
+      },
+      onPanResponderMove: (_, gestureState) => {
+        if (gestureState.dx < -50) {
+          setIsCancelling(true);
+        } else {
+          setIsCancelling(false);
+        }
+        
+        // Mover el texto de "Desliza para cancelar" un poco
+        if (gestureState.dx < 0) {
+          cancelTranslateX.setValue(gestureState.dx);
+        }
+      },
+      onPanResponderRelease: (_, gestureState) => {
+        if (gestureState.dx < -100) {
+          cancelRecording();
+        } else {
+          stopRecording();
+        }
+        // Resetear animaciones
+        Animated.spring(cancelTranslateX, { toValue: 0, useNativeDriver: true }).start();
+        setIsCancelling(false);
+      },
+      onPanResponderTerminate: () => {
+        stopRecording();
+        setIsCancelling(false);
+      },
+    })
+  ).current;
+
+  const cancelRecording = async () => {
+    try {
+      if (durationInterval.current) clearInterval(durationInterval.current);
+      
+      // Detener grabación si está activa
+      if (isRecordingRef.current) {
+        await audioRecorder.stop();
+      }
+      
+      // Resetear estados
+      setRecordingStartTime(null);
+      setRecordingDuration(0);
+      isPreparing.current = false;
+      
+      // Resetear animación del micrófono aquí también
+      Animated.spring(micScale, {
+        toValue: 1,
+        useNativeDriver: true,
+      }).start();
+
+      Vibration.vibrate(50); // Feedback táctil corto de cancelación
+    } catch (e) {
+      console.error("Error al cancelar grabación", e);
+    }
+  };
+
+  // Animación del espectro de audio
   useEffect(() => {
     if (isRecording) {
       Animated.loop(
         Animated.sequence([
-          Animated.timing(waveformAnim, {
-            toValue: 1,
-            duration: 500,
-            useNativeDriver: true,
-          }),
-          Animated.timing(waveformAnim, {
-            toValue: 0,
-            duration: 500,
-            useNativeDriver: true,
-          }),
+          Animated.timing(waveformAnim, { toValue: 1, duration: 500, useNativeDriver: true }),
+          Animated.timing(waveformAnim, { toValue: 0, duration: 500, useNativeDriver: true }),
         ])
       ).start();
     } else {
@@ -69,31 +264,138 @@ function Multimedia({ onFinalize }) {
     }
   }, [isRecording]);
 
+  const lastSequenceRef = useRef(0);
+
+  // Actualizar la referencia cada vez que cambie el estado (para el polling)
   useEffect(() => {
+    lastSequenceRef.current = lastSequence;
+  }, [lastSequence]);
+
+  // Carga inicial y polling de mensajes
+  useEffect(() => {
+    const setupChat = async () => {
+      // Configurar audio globalmente para esta pantalla una sola vez
+      try {
+        await setAudioModeAsync({
+          allowsRecording: true,
+          playsInSilentMode: true,
+          staysActiveInBackground: true,
+          shouldDuckAndroid: true,
+          playThroughEarpieceAndroid: false,
+        });
+      } catch (e) {
+        console.warn("Error configurando modo de audio inicial:", e);
+      }
+
+      await initializeChat();
+      startPolling();
+    };
+    
+    setupChat();
+
     return () => {
       if (recordingTimer.current) clearTimeout(recordingTimer.current);
+      if (pollTimer.current) clearInterval(pollTimer.current);
     };
   }, []);
 
-  const handleSendText = async () => {
-    if (!text.trim()) {
-      Alert.alert("Error", "Por favor, escriba un mensaje.");
-      return;
-    }
-
-    setLoading(prev => ({ ...prev, text: true }));
+  const initializeChat = async () => {
+    setLoading(prev => ({ ...prev, messages: true }));
     try {
-      await savePost({
-        eventCode: "130",
-        multimediaText: text.trim()
-      });
-      Alert.alert("Éxito", "Mensaje enviado correctamente.");
-      setText("");
+      // Obtenemos la última secuencia actual para ignorar el historial
+      const data = await fetchChatMessages(0);
+      if (data.ultima_secuencia) {
+        setLastSequence(data.ultima_secuencia);
+        console.log("Chat inicializado desde secuencia:", data.ultima_secuencia);
+      }
+      setMessages([]); // Aseguramos que el chat empiece vacío visualmente
     } catch (error) {
-      console.error("Error al enviar texto multimedia:", error);
-      Alert.alert("Error", "No se pudo enviar el mensaje.");
+      console.error("Error al inicializar chat:", error);
     } finally {
-      setLoading(prev => ({ ...prev, text: false }));
+      setLoading(prev => ({ ...prev, messages: false }));
+    }
+  };
+
+  const startPolling = () => {
+    pollTimer.current = setInterval(async () => {
+      try {
+        const data = await fetchChatMessages(lastSequenceRef.current);
+        if (data.mensajes && data.mensajes.length > 0) {
+          setMessages(prev => {
+            let updatedList = [...prev];
+            data.mensajes.forEach(nm => {
+              const index = updatedList.findIndex(pm => 
+                pm.client_message_id && pm.client_message_id === nm.client_message_id
+              );
+              
+              if (index !== -1) {
+                // Actualizamos el mensaje optimista con los datos reales del servidor
+                updatedList[index] = { ...updatedList[index], ...nm, loading: false };
+              } else if (!updatedList.some(pm => pm.secuencia === nm.secuencia)) {
+                // Es un mensaje nuevo (ej: del operador)
+                updatedList.push(nm);
+              }
+            });
+            // Ordenar siempre por secuencia para evitar desorden por retardos de red
+            return updatedList.sort((a, b) => (a.secuencia || 0) - (b.secuencia || 0));
+          });
+          setLastSequence(data.ultima_secuencia);
+        }
+      } catch (error) {
+        console.warn("Error en polling de chat:", error);
+      }
+    }, 5000); // Cada 5 segundos
+  };
+
+  const handleSend = async () => {
+    if (!text.trim() && images.length === 0 && !audioUri) return;
+
+    const messageId = generateUUID();
+    const tempText = text.trim();
+    const pendingImages = [...images];
+    const pendingAudio = audioUri;
+    
+    // Optimistic UI
+    const newMsg = {
+      client_message_id: messageId,
+      texto: tempText,
+      autor: "vecino",
+      recibido_utc: new Date().toISOString(),
+      loading: true,
+      adjunto: pendingAudio 
+        ? { tipo: "audio", url: pendingAudio } 
+        : (pendingImages.length > 0 ? { tipo: "imagen", url: pendingImages[0] } : null)
+    };
+
+    setMessages(prev => [...prev, newMsg]);
+    setText("");
+    setImages([]);
+    setAudioUri(null);
+    Keyboard.dismiss();
+
+    try {
+      let adjuntoId = null;
+
+      // 1. Subir primer adjunto si existe (la API actual parece soportar uno por mensaje)
+      if (pendingImages.length > 0) {
+        const uploadResult = await uploadChatAttachment(pendingImages[0], "imagen");
+        adjuntoId = uploadResult.adjunto_id;
+      } else if (pendingAudio) {
+        const uploadResult = await uploadChatAttachment(pendingAudio, "audio");
+        adjuntoId = uploadResult.adjunto_id;
+      }
+
+      // 2. Enviar mensaje de chat
+      await sendChatMessage({
+        texto: tempText || (adjuntoId ? "" : "..."),
+        client_message_id: messageId,
+        adjunto_id: adjuntoId
+      });
+      
+    } catch (error) {
+      console.error("Error al enviar mensaje:", error);
+      Alert.alert("Error", "No se pudo enviar el mensaje o los adjuntos.");
+      // Opcionalmente remover el mensaje optimista o marcarlo como error
     }
   };
 
@@ -117,6 +419,7 @@ function Multimedia({ onFinalize }) {
     if (!result.canceled) {
       const newUri = result.assets[0].uri;
       setImages(prev => [...prev, newUri]);
+      // En un flujo real, aquí subiríamos la foto y luego enviaríamos el mensaje de chat
     }
   };
 
@@ -125,41 +428,68 @@ function Multimedia({ onFinalize }) {
   };
 
   const startRecording = async () => {
+    if (isPreparing.current || isRecordingRef.current || recordingStartTimeRef.current) return;
+    isPreparing.current = true;
+
     try {
       const { granted } = await requestRecordingPermissionsAsync();
       if (!granted) {
         Alert.alert("Permiso denegado", "Se necesita permiso para grabar audio.");
+        isPreparing.current = false;
         return;
       }
 
-      setRecordingStartTime(Date.now());
+      Vibration.vibrate(60); // Feedback táctil de inicio
+      
+      // Animación del micrófono
+      Animated.spring(micScale, {
+        toValue: 1.5,
+        friction: 4,
+        useNativeDriver: true,
+      }).start();
+
       await audioRecorder.prepareToRecordAsync();
       audioRecorder.record();
 
-      if (recordingTimer.current) clearTimeout(recordingTimer.current);
-      recordingTimer.current = setTimeout(() => {
-        stopRecording();
-      }, 60000);
+      setRecordingStartTime(Date.now());
+      setRecordingDuration(0);
 
+      // Iniciar contador de tiempo
+      if (durationInterval.current) clearInterval(durationInterval.current);
+      durationInterval.current = setInterval(() => {
+        setRecordingDuration(prev => prev + 1);
+      }, 1000);
+
+      if (recordingTimer.current) clearTimeout(recordingTimer.current);
+      recordingTimer.current = setTimeout(() => stopRecording(), 60000);
     } catch (err) {
       console.error("Failed to start recording", err);
-      Alert.alert("Error", "No se pudo iniciar la grabación.");
+    } finally {
+      isPreparing.current = false;
     }
   };
 
   const stopRecording = async () => {
-    if (!isRecording) return;
-    
-    const now = Date.now();
-    const duration = now - (recordingStartTime || 0);
+    // Si todavía se está preparando, esperamos un poco o forzamos el stop después
+    if (isPreparing.current) {
+      setTimeout(() => stopRecording(), 100);
+      return;
+    }
 
-    // FIX: Evitar el error de java.lang.RuntimeException: stop failed en Android
-    // si se detiene la grabación demasiado rápido (< 1 seg)
+    if (!isRecordingRef.current && !recordingStartTimeRef.current) return;
+    
+    // Resetear animación del micrófono
+    Animated.spring(micScale, {
+      toValue: 1,
+      useNativeDriver: true,
+    }).start();
+
+    if (durationInterval.current) clearInterval(durationInterval.current);
+
+    const now = Date.now();
+    const duration = now - (recordingStartTimeRef.current || 0);
     if (duration < 1000) {
-      console.warn("Grabación demasiado corta, esperando...");
-      setTimeout(async () => {
-        await finalizeRecording();
-      }, 1000 - duration);
+      setTimeout(async () => await finalizeRecording(), 1000 - duration);
     } else {
       await finalizeRecording();
     }
@@ -169,239 +499,372 @@ function Multimedia({ onFinalize }) {
     setLoading(prev => ({ ...prev, audio: true }));
     try {
       await audioRecorder.stop();
-      const uri = audioRecorder.uri;
-      setAudioUri(uri);
-      console.log("Audio grabado en:", uri);
-      // No alertamos aquí para no interrumpir el flujo del usuario
+      setAudioUri(audioRecorder.uri);
+      Vibration.vibrate(40); // Feedback táctil de fin
     } catch (error) {
       console.error("Failed to stop recording", error);
     } finally {
       setLoading(prev => ({ ...prev, audio: false }));
       setRecordingStartTime(null);
-      if (recordingTimer.current) clearTimeout(recordingTimer.current);
+      setRecordingDuration(0);
+      isPreparing.current = false;
     }
   };
 
-  const handleAudioAction = () => {
-    if (audioUri && !isRecording) {
-      if (player.playing) {
-        player.pause();
-      } else {
-        player.play();
+  const formatTimer = (seconds) => {
+    const mins = Math.floor(seconds / 60);
+    const secs = seconds % 60;
+    return `${mins}:${secs.toString().padStart(2, '0')}`;
+  };
+
+  const renderMessage = ({ item }) => {
+    const isMine = item.autor === "vecino";
+    
+    // Función para asegurar que la fecha se interprete como UTC
+    const getValidDate = (dateStr) => {
+      if (!dateStr) return new Date();
+      try {
+        let sanitized = dateStr;
+        // Si viene con espacio, lo cambiamos por T para formato ISO
+        sanitized = sanitized.replace(" ", "T");
+        // Si no tiene indicador de zona horaria (Z o +00:00), se lo agregamos como UTC
+        if (!sanitized.endsWith("Z") && !sanitized.includes("+") && sanitized.includes("T")) {
+          sanitized += "Z";
+        }
+        const d = new Date(sanitized);
+        return isNaN(d.getTime()) ? new Date() : d;
+      } catch (e) {
+        return new Date();
       }
-    }
-  };
+    };
 
-  const handleFinalize = async () => {
-    setLoading(prev => ({ ...prev, text: true }));
-    try {
-      console.log("Enviando reporte final:", { images, text, audioUri });
-      Alert.alert("Reporte Enviado", "Toda la información ha sido enviada con éxito.", [
-        { text: "OK", onPress: onFinalize }
-      ]);
-    } catch (error) {
-      Alert.alert("Error", "No se pudo finalizar el envío.");
-    } finally {
-      setLoading(prev => ({ ...prev, text: false }));
-    }
+    return (
+      <View style={[styles.messageBubble, isMine ? styles.myMessage : styles.opMessage]}>
+        {!isMine && <Text style={styles.authorName}>{item.autor_nombre || "Operador"}</Text>}
+        {item.texto && <Text style={[styles.messageText, isMine ? styles.myText : styles.opText]}>{item.texto}</Text>}
+        {item.adjunto && item.adjunto.tipo === "imagen" && (
+          <Image source={{ uri: item.adjunto.url }} style={styles.messageImage} resizeMode="cover" />
+        )}
+        {item.adjunto && item.adjunto.tipo === "audio" && (
+          <AudioMessage uri={item.adjunto.url} isMine={isMine} />
+        )}
+        <View style={styles.messageFooter}>
+          <Text style={styles.messageTime}>
+            {getValidDate(item.recibido_utc).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+          </Text>
+          {isMine && (
+            <Ionicons 
+              name={item.loading ? "time-outline" : "checkmark-done"} 
+              size={14} 
+              color={item.loading ? "#999" : "#34B7F1"} 
+              style={{ marginLeft: 5 }}
+            />
+          )}
+        </View>
+      </View>
+    );
   };
-
-  const RecordingWaveform = () => (
-    <View style={styles.waveformContainer}>
-      {[1, 2, 3, 4, 5].map((i) => (
-        <Animated.View
-          key={i}
-          style={[
-            styles.waveformBar,
-            {
-              transform: [{
-                scaleY: waveformAnim.interpolate({
-                  inputRange: [0, 1],
-                  outputRange: [1, 1 + (i * 0.5)]
-                })
-              }]
-            }
-          ]}
-        />
-      ))}
-    </View>
-  );
 
   return (
     <KeyboardAvoidingView 
-      behavior={Platform.OS === "ios" ? "padding" : "height"}
-      style={styles.container}
+      behavior={Platform.OS === "ios" ? "padding" : "padding"}
+      style={{ flex: 1 }}
+      keyboardVerticalOffset={Platform.OS === "ios" ? 90 : 80}
     >
-      <ScrollView contentContainerStyle={styles.scrollContent}>
-        {images.length === 0 && !audioUri && (
-          <View style={styles.header}>
-            <View style={styles.emergencyBadge}>
-              <Ionicons name="warning" size={20} color="white" />
-              <Text style={styles.emergencyText}>EMERGENCIA ACTIVA</Text>
-            </View>
-            <Text style={styles.title}>Información Adicional</Text>
-          </View>
-        )}
-
-        {/* Ventana Superior de Galería (Preview) */}
-        {images.length > 0 && (
-          <View style={styles.previewContainer}>
-            <View style={styles.previewHeader}>
-              <Text style={styles.previewTitle}>Imágenes Capturadas ({images.length}/3)</Text>
-            </View>
-            <View style={styles.galleryRow}>
-              {images.map((uri, index) => (
-                <View key={index} style={styles.thumbnailWrapper}>
-                  <Image source={{ uri }} style={styles.thumbnail} />
-                  <TouchableOpacity 
-                    style={styles.deleteBadge}
-                    onPress={() => removeImage(index)}
-                  >
-                    <Ionicons name="close-circle" size={20} color="#E74C3C" />
-                  </TouchableOpacity>
-                </View>
-              ))}
-            </View>
-          </View>
-        )}
-
-        <View style={styles.card}>
-          <Text style={styles.cardTitle}>Mensaje de Texto</Text>
-          <TextInput
-            style={styles.textInput}
-            placeholder="Describa la situación..."
-            multiline
-            numberOfLines={4}
-            value={text}
-            onChangeText={setText}
-            placeholderTextColor="#999"
-          />
+      <View style={styles.container}>
+      <View style={styles.header}>
+        <View style={styles.headerRow}>
           <TouchableOpacity 
-            style={[styles.sendButton, (!text.trim() || loading.text) && styles.buttonDisabled]}
-            onPress={handleSendText}
-            disabled={!text.trim() || loading.text}
+            style={styles.backButton} 
+            onPress={() => {
+              Alert.alert(
+                "¿Abandonar Multimedia?",
+                "Si sale de esta pantalla, no podrá adjuntar más información a este reporte.",
+                [
+                  { text: "Continuar Reportando", style: "cancel", onPress: () => {} },
+                  { 
+                    text: "Salir", 
+                    style: "destructive", 
+                    onPress: () => {
+                      if (typeof onFinalize === 'function') onFinalize();
+                      navigation.navigate("Desit");
+                    } 
+                  },
+                ]
+              );
+            }}
           >
-            {loading.text ? (
-              <ActivityIndicator color="white" />
-            ) : (
-              <>
-                <Text style={styles.buttonText}>ENVIAR TEXTO</Text>
-                <Ionicons name="send" size={18} color="white" style={{ marginLeft: 8 }} />
-              </>
-            )}
+            <Ionicons name="arrow-back" size={24} color="#222266" />
           </TouchableOpacity>
+          <View style={styles.emergencyBadge}>
+            <Ionicons name="warning" size={16} color="white" />
+            <Text style={styles.emergencyText}>CANAL DE EMERGENCIA ACTIVO</Text>
+          </View>
+          <View style={{ width: 40 }} /> 
+        </View>
+      </View>
+
+      <FlatList
+        ref={flatListRef}
+        data={messages}
+        keyboardShouldPersistTaps="always"
+        renderItem={renderMessage}
+        keyExtractor={(item, index) => item.secuencia?.toString() || item.client_message_id || index.toString()}
+        contentContainerStyle={styles.messageList}
+        onContentSizeChange={() => flatListRef.current?.scrollToEnd({ animated: true })}
+        onLayout={() => flatListRef.current?.scrollToEnd({ animated: true })}
+        ListEmptyComponent={
+          loading.messages ? (
+            <ActivityIndicator style={{ marginTop: 20 }} color="#222266" />
+          ) : (
+            <Text style={styles.emptyChatText}>Inicie el chat describiendo su situación...</Text>
+          )
+        }
+      />
+
+      {/* Área de adjuntos pendientes */}
+      {(images.length > 0 || audioUri) && (
+        <View style={styles.pendingAttachments}>
+          <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+            {images.map((uri, index) => (
+              <View key={`img-${index}`} style={styles.thumbWrapper}>
+                <Image source={{ uri }} style={styles.thumb} />
+                <TouchableOpacity style={styles.removeThumb} onPress={() => removeImage(index)}>
+                  <Ionicons name="close-circle" size={20} color="#E74C3C" />
+                </TouchableOpacity>
+              </View>
+            ))}
+            {audioUri && (
+              <View style={styles.thumbWrapper}>
+                <View style={[styles.thumb, styles.audioThumb]}>
+                  <Ionicons name="mic" size={30} color="#222266" />
+                </View>
+                <TouchableOpacity style={styles.removeThumb} onPress={() => setAudioUri(null)}>
+                  <Ionicons name="close-circle" size={20} color="#E74C3C" />
+                </TouchableOpacity>
+              </View>
+            )}
+          </ScrollView>
+        </View>
+      )}
+
+      {/* Barra de entrada dinámica estilo WhatsApp */}
+      <View style={styles.inputArea}>
+        <View style={styles.inputMainContainer}>
+          {/* El Input se mantiene siempre en el DOM para no perder el foco del teclado */}
+          <View style={[
+            styles.inputControlsContainer, 
+            isRecording && { opacity: 0 }
+          ]}>
+            <TouchableOpacity style={styles.iconBtn} onPress={takePhoto}>
+              <Ionicons name="camera" size={28} color="#222266" />
+            </TouchableOpacity>
+
+            <TextInput
+              ref={inputRef}
+              style={styles.input}
+              placeholder="Escriba un mensaje..."
+              value={text}
+              onChangeText={setText}
+              multiline
+              blurOnSubmit={false}
+            />
+          </View>
+
+          {/* Interfaz de grabación que aparece sobre el input */}
+          {isRecording && (
+            <View style={[styles.recordingContainer, { position: 'absolute', left: 0, right: 0, top: 0, bottom: 0, backgroundColor: 'white' }]}>
+              <View style={styles.recordingInfo}>
+                <Animated.View style={[styles.redDot, { opacity: waveformAnim }]} />
+                <Text style={styles.timerText}>{formatTimer(recordingDuration)}</Text>
+              </View>
+              
+              <Animated.View 
+                style={[
+                  styles.cancelHintContainer, 
+                  { transform: [{ translateX: cancelTranslateX }] }
+                ]}
+              >
+                <Text style={[styles.cancelHint, isCancelling && { color: '#E74C3C' }]}>
+                  {isCancelling ? "Suelta para borrar" : "◀ Desliza para cancelar"}
+                </Text>
+              </Animated.View>
+              <View style={{ width: 50 }} /> 
+            </View>
+          )}
         </View>
 
-        <View style={styles.row}>
-          <TouchableOpacity 
-            style={[styles.actionCard, (loading.image || images.length >= 3) && styles.cardDisabled]}
-            onPress={takePhoto}
-            disabled={loading.image || images.length >= 3}
-          >
-            {loading.image ? (
-              <ActivityIndicator color="#222266" />
-            ) : (
-              <>
-                <View style={[styles.iconCircle, { backgroundColor: "#E3F2FD" }]}>
-                  <MaterialIcons name="photo-camera" size={32} color="#1976D2" />
-                </View>
-                <Text style={styles.actionLabel}>
-                  {images.length >= 3 ? "LÍMITE ALCANZADO" : "TOMAR FOTO"}
-                </Text>
-                {images.length > 0 && images.length < 3 && (
-                  <Text style={styles.imageCount}>{images.length}/3 fotos</Text>
-                )}
-              </>
-            )}
-          </TouchableOpacity>
-
-          <TouchableOpacity 
-            style={[styles.actionCard, isRecording && styles.cardRecording]}
-            onPress={handleAudioAction}
-            onLongPress={startRecording}
-            onPressOut={stopRecording}
-            delayLongPress={200}
-          >
-            {loading.audio ? (
-              <ActivityIndicator color="#222266" />
-            ) : (
-              <>
-                <View style={[
-                  styles.iconCircle, 
-                  isRecording ? { backgroundColor: "#FFEBEE" } : (audioUri ? { backgroundColor: "#E8F5E9" } : { backgroundColor: "#F3E5F5" })
-                ]}>
-                  <Ionicons 
-                    name={isRecording ? "stop-circle" : (audioUri ? (player.playing ? "pause" : "play") : "mic")} 
-                    size={32} 
-                    color={isRecording ? "#D32F2F" : (audioUri ? "#2E7D32" : "#7B1FA2")} 
-                  />
-                </View>
-                <Text style={[
-                  styles.actionLabel, 
-                  isRecording && { color: "#D32F2F" },
-                  audioUri && !isRecording && { color: "#2E7D32" }
-                ]}>
-                  {isRecording ? "GRABANDO..." : (audioUri ? "OÍR / RE-GRABAR" : "GRABAR AUDIO")}
-                </Text>
-                {isRecording && <RecordingWaveform />}
-                {!isRecording && audioUri && <Text style={styles.audioHint}>Mantenga para re-grabar</Text>}
-                {!isRecording && !audioUri && <Text style={styles.audioHint}>Mantenga para grabar</Text>}
-              </>
-            )}
-          </TouchableOpacity>
+        {/* Botón de Acción Estable (Micrófono/Enviar) */}
+        <View style={styles.actionButtonContainer}>
+          {(!text.trim() && images.length === 0 && !audioUri) ? (
+            <Animated.View 
+              {...panResponder.panHandlers}
+              style={[
+                styles.micBtnContainer, 
+                isRecording && styles.micBtnContainerActive,
+                { transform: [{ scale: micScale }] }
+              ]}
+            >
+              <Ionicons 
+                name="mic" 
+                size={isRecording ? 32 : 28} 
+                color={isRecording ? "#E74C3C" : "#222266"} 
+              />
+            </Animated.View>
+          ) : (
+            <TouchableOpacity 
+              style={[styles.sendBtn, styles.sendBtnActive]} 
+              onPress={handleSend}
+            >
+              <Ionicons name="send" size={24} color="white" />
+            </TouchableOpacity>
+          )}
         </View>
+      </View>
 
-        <TouchableOpacity 
-          style={styles.finalizeButton}
-          onPress={handleFinalize}
-        >
-          <Text style={styles.finalizeButtonText}>ENVIAR Y FINALIZAR REPORTE</Text>
-          <Ionicons name="cloud-upload" size={20} color="#222266" style={{ marginLeft: 10 }} />
-        </TouchableOpacity>
-        
-        <Text style={styles.footerText}>La información será enviada a la central de monitoreo.</Text>
-      </ScrollView>
+      <TouchableOpacity 
+        style={styles.finalizeBtn} 
+        onPress={() => {
+          if (onFinalize) onFinalize();
+          navigation.navigate("Desit");
+        }}
+      >
+        <Text style={styles.finalizeBtnText}>FINALIZAR REPORTE</Text>
+      </TouchableOpacity>
+      </View>
     </KeyboardAvoidingView>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: "#F5F7FA" },
-  scrollContent: { padding: 20, paddingBottom: 40 },
-  header: { alignItems: "center", marginBottom: 20, marginTop: 10 },
-  emergencyBadge: { flexDirection: "row", alignItems: "center", backgroundColor: "#E74C3C", paddingHorizontal: 12, paddingVertical: 6, borderRadius: 20, marginBottom: 15 },
-  emergencyText: { color: "white", fontSize: 12, fontFamily: "open-sans-bold", marginLeft: 6 },
-  title: { fontSize: 24, fontFamily: "open-sans-bold", color: "#222266", textAlign: "center" },
+  container: { flex: 1, backgroundColor: "#F0F2F5" },
+  header: { padding: 10, backgroundColor: "white", borderBottomWidth: 1, borderBottomColor: "#DDD" },
+  headerRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", width: "100%" },
+  backButton: { padding: 5 },
+  emergencyBadge: { flexDirection: "row", alignItems: "center", backgroundColor: "#E74C3C", paddingHorizontal: 12, paddingVertical: 4, borderRadius: 15 },
+  emergencyText: { color: "white", fontSize: 10, fontFamily: "open-sans-bold", marginLeft: 5 },
   
-  previewContainer: { backgroundColor: "white", borderRadius: 15, padding: 15, marginBottom: 20, elevation: 4, shadowColor: "#000", shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.15, shadowRadius: 5 },
-  previewHeader: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 12 },
-  previewTitle: { fontSize: 14, fontFamily: "open-sans-bold", color: "#666" },
-  galleryRow: { flexDirection: "row", justifyContent: "flex-start" },
-  thumbnailWrapper: { marginRight: 15, position: "relative" },
-  thumbnail: { width: 80, height: 80, borderRadius: 10, borderWidth: 1, borderColor: "#DDD" },
-  deleteBadge: { position: "absolute", top: -8, right: -8, backgroundColor: "white", borderRadius: 10 },
+  messageList: { padding: 15, paddingBottom: 20 },
+  messageBubble: { maxWidth: "80%", padding: 10, borderRadius: 15, marginBottom: 10, elevation: 1 },
+  myMessage: { alignSelf: "flex-end", backgroundColor: "#DCF8C6", borderBottomRightRadius: 2 },
+  opMessage: { alignSelf: "flex-start", backgroundColor: "white", borderBottomLeftRadius: 2 },
+  authorName: { fontSize: 11, color: "#222266", fontWeight: "bold", marginBottom: 3 },
+  messageText: { fontSize: 16, color: "#333" },
+  myText: { color: "#000" },
+  opText: { color: "#333" },
+  messageImage: { width: 200, height: 150, borderRadius: 10, marginTop: 5 },
+  
+  // Estilos de Audio en el Chat
+  audioBubbleContent: { flexDirection: "row", alignItems: "center", padding: 5, minWidth: 150 },
+  playButton: { width: 40, height: 40, borderRadius: 20, backgroundColor: "rgba(34, 34, 102, 0.1)", justifyContent: "center", alignItems: "center" },
+  audioInfo: { flex: 1, marginLeft: 10 },
+  waveformPlaceholder: { flexDirection: "row", alignItems: "center", height: 30 },
+  waveformBar: { width: 3, backgroundColor: "#222266", marginHorizontal: 1, borderRadius: 2 },
+  audioDuration: { fontSize: 10, color: "#666" },
 
-  card: { backgroundColor: "white", borderRadius: 15, padding: 20, marginBottom: 20, elevation: 3, shadowColor: "#000", shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.1, shadowRadius: 4 },
-  cardTitle: { fontSize: 16, fontFamily: "open-sans-bold", color: "#222266", marginBottom: 15 },
-  textInput: { backgroundColor: "#F9FAFB", borderRadius: 10, padding: 15, fontSize: 16, fontFamily: "open-sans", color: "#333", borderWidth: 1, borderColor: "#E5E7EB", textAlignVertical: "top", minHeight: 100 },
-  sendButton: { backgroundColor: "#222266", flexDirection: "row", height: 50, borderRadius: 10, justifyContent: "center", alignItems: "center", marginTop: 15 },
-  buttonDisabled: { opacity: 0.6 },
-  buttonText: { color: "white", fontSize: 16, fontFamily: "open-sans-bold" },
-  row: { flexDirection: "row", justifyContent: "space-between", marginBottom: 25 },
-  actionCard: { backgroundColor: "white", width: "48%", borderRadius: 15, padding: 20, alignItems: "center", justifyContent: "center", elevation: 3, shadowColor: "#000", shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.1, shadowRadius: 4 },
-  cardDisabled: { opacity: 0.5 },
-  cardRecording: { borderColor: "#E74C3C", borderWidth: 1 },
-  iconCircle: { width: 60, height: 60, borderRadius: 30, justifyContent: "center", alignItems: "center", marginBottom: 12 },
-  actionLabel: { fontSize: 12, fontFamily: "open-sans-bold", color: "#222266", textAlign: "center" },
-  imageCount: { fontSize: 10, color: "#1976D2", marginTop: 4, fontFamily: "open-sans-bold" },
-  audioHint: { fontSize: 10, color: "#666", marginTop: 4 },
-  finalizeButton: { flexDirection: "row", borderWidth: 2, borderColor: "#222266", height: 55, borderRadius: 12, justifyContent: "center", alignItems: "center", marginTop: 10 },
-  finalizeButtonText: { color: "#222266", fontSize: 16, fontFamily: "open-sans-bold" },
-  footerText: { textAlign: "center", color: "#999", fontSize: 12, marginTop: 20, fontFamily: "open-sans" },
+  messageFooter: { flexDirection: "row", alignItems: "center", alignSelf: "flex-end", marginTop: 4 },
+  messageTime: { fontSize: 10, color: "#999" },
+  emptyChatText: { textAlign: "center", color: "#999", marginTop: 50, fontFamily: "open-sans" },
 
-  // Waveform Styles
-  waveformContainer: { flexDirection: "row", height: 20, alignItems: "center", marginTop: 10 },
-  waveformBar: { width: 3, height: 8, backgroundColor: "#E74C3C", marginHorizontal: 2, borderRadius: 2 },
+  inputArea: { 
+    flexDirection: "row", 
+    alignItems: "center", 
+    padding: 10, 
+    backgroundColor: "white", 
+    borderTopWidth: 1, 
+    borderTopColor: "#EEE" 
+  },
+  inputMainContainer: {
+    flex: 1,
+    flexDirection: "row",
+    alignItems: "center",
+  },
+  inputControlsContainer: {
+    flex: 1,
+    flexDirection: "row",
+    alignItems: "center",
+  },
+  actionButtonContainer: {
+    width: 50,
+    height: 50,
+    justifyContent: "center",
+    alignItems: "center",
+    marginLeft: 5,
+  },
+  input: { 
+    flex: 1, 
+    backgroundColor: "#F0F2F5", 
+    borderRadius: 20, 
+    paddingHorizontal: 15, 
+    paddingVertical: 8, 
+    marginHorizontal: 10, 
+    maxHeight: 100, 
+    fontSize: 16 
+  },
+  iconBtn: { padding: 5 },
+  sendBtn: { 
+    width: 44, 
+    height: 44, 
+    borderRadius: 22, 
+    backgroundColor: "#222266", 
+    justifyContent: "center", 
+    alignItems: "center" 
+  },
+  sendBtnDisabled: { backgroundColor: "#CCC" },
+  sendBtnActive: { backgroundColor: "#222266" },
+
+  micBtnContainer: {
+    width: 44,
+    height: 44,
+    justifyContent: "center",
+    alignItems: "center",
+  },
+  micBtnContainerActive: {
+    backgroundColor: "rgba(231, 76, 60, 0.1)",
+    borderRadius: 22,
+  },
+  recordingContainer: {
+    flex: 1,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    height: 44,
+  },
+  recordingInfo: {
+    flexDirection: "row",
+    alignItems: "center",
+  },
+  redDot: {
+    width: 10,
+    height: 10,
+    borderRadius: 5,
+    backgroundColor: "#E74C3C",
+    marginRight: 8,
+  },
+  timerText: {
+    fontSize: 16,
+    color: "#333",
+    fontFamily: "open-sans-bold",
+  },
+  cancelHintContainer: {
+    flex: 1,
+    alignItems: "center",
+    marginRight: 40,
+  },
+  cancelHint: {
+    fontSize: 14,
+    color: "#999",
+    fontFamily: "open-sans",
+  },
+
+  pendingAttachments: { backgroundColor: "white", padding: 10, borderTopWidth: 1, borderTopColor: "#EEE" },
+  thumbWrapper: { marginRight: 10, position: "relative" },
+  thumb: { width: 60, height: 60, borderRadius: 8 },
+  audioThumb: { backgroundColor: "#DCF8C6", justifyContent: "center", alignItems: "center" },
+  removeThumb: { position: "absolute", top: -5, right: -5, backgroundColor: "white", borderRadius: 10 },
+
+  finalizeBtn: { padding: 15, backgroundColor: "white", alignItems: "center", borderTopWidth: 1, borderTopColor: "#DDD" },
+  finalizeBtnText: { color: "#E74C3C", fontWeight: "bold", letterSpacing: 1 }
 });
 
 export default Multimedia;

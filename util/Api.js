@@ -1,187 +1,548 @@
 import axios from "axios";
 import AsyncStorage from "@react-native-async-storage/async-storage";
+import { Platform } from "react-native";
 
-// 🔹 URL base centralizada - Cambia esta línea para actualizar todas las URLs
-const DEVELOP_URL = "https://desit-server-staging-a51a84ceec47.herokuapp.com";
+// 🔹 Servidores disponibles
+const DESIT_SERVER = "https://desit-server-staging-a51a84ceec47.herokuapp.com";
+const DOCTA4_BASE_URL = "https://docta4-api-5pmryov7ba-uc.a.run.app";
 
-const getBaseUrl = () => {
-  return DEVELOP_URL;
+// 🛠 MODO DE SIMULACIÓN PARA PRUEBAS SIN SERVIDOR
+const IS_TEST_MODE = false; 
+
+/**
+ * Función auxiliar para simular latencia de red
+ */
+const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+
+// 🔹 Clave de la App (Proporcionada por DOCTA 4)
+const X_DOCTA_APP_KEY = "SA7UMkePJLYwZuY34lc2qUaopm7POcXlJLUNyBjq"; 
+
+// 🔹 Manejo de errores de autenticación
+let unauthorizedCallback = null;
+
+export const onUnauthorized = (callback) => {
+  unauthorizedCallback = callback;
 };
 
-// 🔹 Endpoints existentes refactorizados
-const API_URL = `${getBaseUrl()}/api/v1/user`;
-const API_TOKEN = `${getBaseUrl()}/api/v1/auth/token`;
-const API_EVENT = `${getBaseUrl()}/api/v1/event`;
-const API_PANICAPP = `${getBaseUrl()}/api/v1/panic-app`;
-const API_NOTIFICATION = `${getBaseUrl()}/api/v1/push-notification/register`;
-const API_AUTH = `${getBaseUrl()}/api/v1/auth`;
-
-// Función para activar el código maestro
-export const activateMasterCode = async (masterCode) => {
-  // 🔹 INICIO DE SIMULACIÓN LOCAL PARA DESARROLLO
-  const code = masterCode.trim().toUpperCase();
-
-  if (code === "COMU") {
-    console.log("🛠️ Simulación: Modo Docta Comunitarias activado");
-    return { 
-      success: true, 
-      product: "docta_panico", 
-      masterToken: "token-simulado-comunitarias" 
-    };
+// Interceptor de Axios para manejar 401 globalmente
+axios.interceptors.response.use(
+  (response) => response,
+  async (error) => {
+    if (error.response?.status === 401) {
+      console.log("🔴 Sesión expirada o token inválido (401).");
+      
+      // Limpiar tokens
+      await AsyncStorage.removeItem("@device_token");
+      await AsyncStorage.removeItem("@master_token");
+      
+      // Notificar a la app si hay un callback registrado
+      if (unauthorizedCallback) {
+        unauthorizedCallback();
+      }
+    }
+    return Promise.reject(error);
   }
+);
 
-  if (code === "VIGI") {
-    console.log("🛠️ Simulación: Modo Vigilantes activado");
-    return { 
-      success: true, 
-      product: "vigilantes", 
-      masterToken: "token-simulado-vigilantes" 
-    };
-  }
-  // 🔹 FIN DE SIMULACIÓN LOCAL
+/**
+ * Genera un UUID v4 simple para idempotencia.
+ */
+export const generateUUID = () => {
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
+    var r = Math.random() * 16 | 0, v = c == 'x' ? r : (r & 0x3 | 0x8);
+    return v.toString(16);
+  });
+};
 
+/**
+ * Retorna la URL base dinámicamente según el estado del usuario.
+ */
+const getBaseUrl = async () => {
   try {
-    const response = await axios.post(`${API_AUTH}/master-activate`, {
-      code: masterCode,
-    }, {
-      headers: {
-        "Content-Type": "application/json",
-      },
+    const masterData = await AsyncStorage.getItem("@master_config");
+    if (masterData) {
+      const parsed = JSON.parse(masterData);
+      if (parsed.apiUrl) return parsed.apiUrl;
+      
+      // Si ya es un usuario del sistema nuevo (DOCTA 4), usamos su base URL
+      return DOCTA4_BASE_URL; 
+    }
+
+    const legacyData = await AsyncStorage.getItem("@licencias");
+    if (legacyData) {
+      return DESIT_SERVER;
+    }
+
+    return DOCTA4_BASE_URL; // Por defecto para nuevas instalaciones
+  } catch (error) {
+    return DESIT_SERVER;
+  }
+};
+
+/**
+ * Endpoints dinámicos
+ */
+const getEndpoints = async () => {
+  const baseUrl = await getBaseUrl();
+  const isDocta4 = baseUrl === DOCTA4_BASE_URL;
+
+  if (isDocta4) {
+    return {
+      onboardingLookup: `${baseUrl}/modulo/onboarding/lookup`,
+      onboardingRegister: `${baseUrl}/modulo/onboarding/register`,
+      register: `${baseUrl}/modulo/dispositivos`,
+      status: `${baseUrl}/modulo/dispositivos/yo`,
+      fcm: `${baseUrl}/modulo/dispositivos/fcm`,
+      panic: `${baseUrl}/modulo/panico-comunitario`,
+      location: `${baseUrl}/modulo/eventos/ubicacion`,
+      chatSend: `${baseUrl}/modulo/chat/mensajes`,
+      chatRead: `${baseUrl}/modulo/chat/mensajes`,
+      chatAttachment: `${baseUrl}/modulo/chat/adjuntos`,
+    };
+  }
+
+  // Endpoints Legacy (Desit Server)
+  return {
+    user: `${baseUrl}/api/v1/user`,
+    token: `${baseUrl}/api/v1/auth/token`,
+    event: `${baseUrl}/api/v1/event`,
+    panicApp: `${baseUrl}/api/v1/panic-app`,
+    notification: `${baseUrl}/api/v1/push-notification/register`,
+    auth: `${baseUrl}/api/v1/auth`,
+  };
+};
+
+/**
+ * Obtiene el token de autenticación según el servidor
+ */
+const getAuthToken = async () => {
+  const masterConfig = await AsyncStorage.getItem("@master_config");
+  if (masterConfig) {
+    const parsed = JSON.parse(masterConfig);
+    const deviceToken = await AsyncStorage.getItem("@device_token");
+    if (deviceToken) return deviceToken;
+  }
+
+  // Si no está en master_config, buscar en las licencias específicas
+  const products = ["docta_panico", "docta_comunitarias", "docta_legacy"];
+  for (const prod of products) {
+    const key = prod === "docta_legacy" || prod === "docta_panico" ? "@licencias" : `@licencias_${prod}`;
+    const data = await AsyncStorage.getItem(key);
+    if (data) {
+      const parsed = JSON.parse(data);
+      const token = parsed.token?.access_token || parsed.token?.accessToken || parsed.token?.accessToken;
+      if (token) return token;
+    }
+  }
+
+  return null;
+};
+
+// ==========================================
+// 🚀 FUNCIONES DOCTA 4 (SISTEMA NUEVO)
+// ==========================================
+
+/**
+ * Validar el código de 7 dígitos (Sección 1b.1)
+ */
+export const lookupOnboardingCode = async (code) => {
+  try {
+    const api = await getEndpoints();
+    const response = await axios.post(api.onboardingLookup, { code }, {
+      headers: { "Content-Type": "application/json" }
     });
     return response.data;
   } catch (error) {
-    console.error("Error activando el código maestro:", error);
+    console.error("Error en lookup de onboarding:", error);
     throw error;
   }
 };
 
-// Función para registrar el token de notificaciones
-export const registerNotificationToken = async (licenseCode, fcmToken) => {
+/**
+ * Registrar y crear la licencia (Sección 1b.2)
+ */
+export const registerOnboarding = async (onboardingData) => {
   try {
-    const response = await axios.post(API_NOTIFICATION, {
-      licenseCode,
-      fcmToken,
-    }, {
+    const api = await getEndpoints();
+    const response = await axios.post(api.onboardingRegister, onboardingData, {
+      headers: { "Content-Type": "application/json" }
+    });
+    
+    // Guardar el token de dispositivo y datos del municipio
+    if (response.data?.token) {
+      await AsyncStorage.setItem("@device_token", response.data.token);
+      await AsyncStorage.setItem("@device_id", String(response.data.dispositivo_id));
+      
+      const currentConfig = await AsyncStorage.getItem("@master_config");
+      const parsedConfig = currentConfig ? JSON.parse(currentConfig) : {};
+
+      await AsyncStorage.setItem("@master_token", response.data.token);
+      await AsyncStorage.setItem("@master_config", JSON.stringify({
+        ...parsedConfig,
+        apiUrl: DOCTA4_BASE_URL,
+        product: "docta_comunitarias",
+        municipality: response.data.municipality || parsedConfig.municipality
+      }));
+    }
+    
+    return response.data;
+  } catch (error) {
+    console.error("Error en registro de onboarding:", error);
+    throw error;
+  }
+};
+
+/**
+ * Registra el dispositivo en DOCTA 4 para obtener un token propio.
+ */
+export const registerDevice = async (regData) => {
+  try {
+    const api = await getEndpoints();
+    const response = await axios.post(api.register, regData, {
       headers: {
+        "X-Docta-App-Key": X_DOCTA_APP_KEY,
         "Content-Type": "application/json",
       },
     });
+    
+    // Guardar el token de dispositivo retornado
+    if (response.data?.token) {
+      await AsyncStorage.setItem("@device_token", response.data.token);
+      await AsyncStorage.setItem("@device_id", String(response.data.dispositivo_id));
+    }
+    
     return response.data;
+  } catch (error) {
+    console.error("Error registrando dispositivo en DOCTA 4:", error);
+    throw error;
+  }
+};
+
+/**
+ * Verifica si el token del dispositivo sigue siendo válido.
+ */
+export const checkDeviceStatus = async () => {
+  try {
+    const api = await getEndpoints();
+    const token = await getAuthToken();
+    const response = await axios.get(api.status, {
+      headers: { 
+        Authorization: `Bearer ${token}`,
+        "X-Docta-App-Key": X_DOCTA_APP_KEY
+      }
+    });
+    return response.data;
+  } catch (error) {
+    if (error.response?.status === 401) {
+      console.log("Token de dispositivo expirado o inválido");
+    }
+    throw error;
+  }
+};
+
+/**
+ * Envía un pánico al sistema DOCTA 4.
+ */
+export const sendPanicDocta4 = async (eventData) => {
+  try {
+    const api = await getEndpoints();
+    const token = await getAuthToken();
+    
+    // Obtener datos del usuario y municipio del almacenamiento local si no vienen en eventData
+    let user = eventData.user || {};
+    let municipality = eventData.municipality || {};
+
+    if (Object.keys(user).length === 0 || Object.keys(municipality).length === 0) {
+      const masterData = await AsyncStorage.getItem("@master_config");
+      const activeProd = masterData ? JSON.parse(masterData).product : "docta_panico";
+      
+      let storageKey = "@licencias";
+      if (activeProd && activeProd !== "docta_panico" && activeProd !== "docta_legacy") {
+        storageKey = `@licencias_${activeProd}`;
+      }
+      
+      const storedLicencia = await AsyncStorage.getItem(storageKey);
+      if (storedLicencia) {
+        const parsed = JSON.parse(storedLicencia);
+        if (Object.keys(user).length === 0) {
+          // Intentar obtener datos del perfil de DOCTA 4 primero
+          user = {
+            Vecino: parsed.result?.licenseCreated?.Vecino || parsed.profile?.Nombre || "Usuario Docta",
+            Telefono: parsed.result?.licenseCreated?.Documento || parsed.profile?.Teléfono || ""
+          };
+        }
+        if (Object.keys(municipality).length === 0) {
+          municipality = parsed.panicAppData?.municipality || parsed.municipality || { id: "68ed14bacb9f182f98a06c28", name: "Default" };
+        }
+      }
+    }
+
+    const eventId = eventData.id || generateUUID();
+
+    const payload = {
+      event: {
+        id: eventId,
+        code: eventData.eventCode || eventData.code || "107", 
+        timestamp: new Date().toISOString(),
+        target_device: eventData.targetDeviceId || null,
+        location: eventData.location ? {
+          lat: eventData.location.lat,
+          lon: eventData.location.lng || eventData.location.lon,
+          precision_m: eventData.location.accuracy || eventData.location.precision_m || 10,
+          capturado_utc: eventData.location.timestamp || new Date().toISOString(),
+          origen: eventData.location.origen || "gps"
+        } : null
+      },
+      user,
+      municipality: {
+        id: municipality.id || "68ed14bacb9f182f98a06c28",
+        name: municipality.name || "Default"
+      }
+    };
+
+    const response = await axios.post(api.panic, payload, {
+      headers: { 
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+        "X-Docta-App-Key": X_DOCTA_APP_KEY
+      }
+    });
+    
+    return { ...response.data, event_id: eventId };
+  } catch (error) {
+    console.error("Error enviando pánico a DOCTA 4:", error);
+    throw error;
+  }
+};
+
+/**
+ * Envía la ubicación vinculada a un pánico previo.
+ */
+export const sendLocationDocta4 = async (eventId, location) => {
+  try {
+    const api = await getEndpoints();
+    const token = await getAuthToken();
+    
+    const payload = {
+      id: eventId,        // Intentar con 'id'
+      event_id: eventId,  // Intentar con 'event_id'
+      evento_id: eventId, // Intentar con 'evento_id' (por consistencia con dispositivo_id)
+      location: {
+        lat: location.lat,
+        lon: location.lng !== undefined ? location.lng : location.lon,
+        precision_m: location.accuracy || location.precision_m || 10,
+        capturado_utc: location.timestamp || new Date().toISOString(),
+        origen: location.origen || "gps"
+      }
+    };
+
+    const response = await axios.post(api.location, payload, {
+      headers: { 
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+        "X-Docta-App-Key": X_DOCTA_APP_KEY // Agregado por seguridad, igual que en registro
+      }
+    });
+    return response.data;
+  } catch (error) {
+    console.error("Error enviando ubicación a DOCTA 4:", error);
+    throw error;
+  }
+};
+
+/**
+ * Sube un archivo adjunto al chat de DOCTA 4.
+ */
+export const uploadChatAttachment = async (fileUri, type = "imagen") => {
+  try {
+    const api = await getEndpoints();
+    const token = await getAuthToken();
+
+    const formData = new FormData();
+    const fileName = fileUri.split("/").pop();
+    const fileType = type === "imagen" ? "image/jpeg" : "audio/mp4";
+
+    formData.append("archivo", {
+      uri: Platform.OS === "android" ? fileUri : fileUri.replace("file://", ""),
+      name: fileName,
+      type: fileType,
+    });
+    formData.append("tipo", type);
+    formData.append("client_attachment_id", generateUUID());
+
+    const response = await axios.post(api.chatAttachment, formData, {
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "multipart/form-data",
+        "X-Docta-App-Key": X_DOCTA_APP_KEY
+      },
+    });
+    return response.data;
+  } catch (error) {
+    console.error("Error subiendo adjunto:", error);
+    throw error;
+  }
+};
+
+/**
+ * Envía un mensaje al chat de DOCTA 4.
+ */
+export const sendChatMessage = async (msgData) => {
+  try {
+    const api = await getEndpoints();
+    const token = await getAuthToken();
+    
+    const payload = {
+      texto: msgData.texto || null,
+      client_message_id: msgData.client_message_id || generateUUID(),
+      enviado_utc: new Date().toISOString(),
+      adjunto_id: msgData.adjunto_id || null
+    };
+
+    const response = await axios.post(api.chatSend, payload, {
+      headers: { 
+        Authorization: `Bearer ${token}`,
+        "X-Docta-App-Key": X_DOCTA_APP_KEY
+      }
+    });
+    return response.data;
+  } catch (error) {
+    console.error("Error enviando mensaje de chat:", error);
+    throw error;
+  }
+};
+
+/**
+ * Lee mensajes del chat de DOCTA 4 desde una secuencia.
+ */
+export const fetchChatMessages = async (desdeSecuencia = 0) => {
+  try {
+    const api = await getEndpoints();
+    const token = await getAuthToken();
+    const response = await axios.get(`${api.chatRead}?desde_secuencia=${desdeSecuencia}`, {
+      headers: { 
+        Authorization: `Bearer ${token}`,
+        "X-Docta-App-Key": X_DOCTA_APP_KEY
+      }
+    });
+    return response.data;
+  } catch (error) {
+    console.error("Error leyendo mensajes de chat:", error);
+    throw error;
+  }
+};
+
+// 🏛️ FUNCIONES LEGACY (SIMULADAS PARA BYPASS)
+// ==========================================
+
+export const activateMasterCode = async (masterCode) => {
+  console.log("BYPASS: Activando código maestro simulado");
+  return { success: true, product: "docta_panico" };
+};
+
+export const getPanicAppByCode = async (code) => {
+  console.log("BYPASS: Obteniendo PanicApp simulado");
+  return {
+    id: "bypass-panic-id",
+    code: code,
+    municipality: { id: "68ed14bacb9f182f98a06c28", name: "Altos del Suquía" },
+    logoUrl: "https://i.imgur.com/aIYhRsN.png"
+  };
+};
+
+export const validateCredentials = async (data) => {
+  console.log("BYPASS: Validando credenciales simuladas");
+  return { 
+    success: true, 
+    result: { 
+      licenseCreated: { status: "accepted", code: "BYPASS-123" } 
+    } 
+  };
+};
+
+export const postUserData = async (data) => {
+  console.log("BYPASS: Guardando datos de usuario simulados");
+  return {
+    licenseCreated: {
+      status: "accepted",
+      code: "BYPASS-123",
+      Vecino: "Usuario de Prueba",
+      Documento: "12345678"
+    }
+  };
+};
+
+export const postToken = async (data) => {
+  console.log("BYPASS: Generando token Legacy simulado");
+  return { 
+    accessToken: "dummy-token",
+    token_type: "Bearer",
+    expires_in: 3600
+  };
+};
+
+export const registerNotificationToken = async (licenseCode, fcmToken) => {
+  try {
+    if (fcmToken === "dummy-fcm") return { success: true };
+    const api = await getEndpoints();
+    const token = await getAuthToken();
+    const isDocta4 = api.fcm !== undefined;
+
+    if (isDocta4) {
+      console.log("🚀 Registrando token FCM en DOCTA 4...");
+      const response = await axios.post(api.fcm, {
+        fcm_token: fcmToken
+      }, {
+        headers: { 
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json",
+          "X-Docta-App-Key": X_DOCTA_APP_KEY
+        }
+      });
+      return response.data;
+    } else {
+      // Flujo Legacy
+      console.log("🚀 Registrando token Push en Servidor Legacy...");
+      const response = await axios.post(api.notification, {
+        licenseCode,
+        fcmToken,
+      }, {
+        headers: {
+          "Content-Type": "application/json",
+        },
+      });
+      return response.data;
+    }
   } catch (error) {
     console.error("Error registrando el token en el servidor:", error);
     throw error;
   }
 };
 
-// Función para hacer un POST
-export const postUserData = async (data) => {
-  try {
-    const response = await axios.post(API_URL, data, {
-      headers: {
-        "Content-Type": "application/json", // Configura los headers, si es necesario
-      },
-    });
-
-    return response.data; // Devuelve los datos de la respuesta
-  } catch (error) {
-    console.error("Error en el POST", error);
-    throw error; // Lanza el error para manejarlo fuera de la función si es necesario
-  }
-};
-//Función Token
-
-export const postToken = async (dataToken) => {
-  try {
-    const response = await axios.post(API_TOKEN, dataToken, {
-      headers: {
-        "Content-Type": "application/json", // Configura los headers, si es necesario
-      },
-    });
-    console.log(response.status);
-    return response.data; // Devuelve los datos de la respuesta
-  } catch (error) {
-    console.error("Error en el POST", error);
-    throw error; // Lanza el error para manejarlo fuera de la función si es necesario
-  }
-};
-
-// Función para validar credenciales
-export const validateCredentials = async (data) => {
-  try {
-    const response = await axios.post(`${API_URL}/validate`, data, {
-      headers: {
-        "Content-Type": "application/json",
-      },
-    });
-    return response.data;
-  } catch (error) {
-    console.error("Error en la validación de credenciales:", error);
-    throw error;
-  }
-};
-
-// Función para obtener datos del panicapp por código
-export const getPanicAppByCode = async (panicAppCode) => {
-  try {
-    const response = await axios.get(`${API_PANICAPP}/code/${panicAppCode}`, {
-      headers: {
-        "Content-Type": "application/json",
-      },
-    });
-    return response.data;
-  } catch (error) {
-    console.error("Error al obtener datos del panicapp:", error);
-    throw error;
-  }
-};
-
-// Función para eliminar la cuenta y licencia
-export const deleteLicenseAccount = async (licenseCode) => {
-  try {
-    const response = await axios.delete(`${API_URL}/delete-account`, {
-      headers: {
-        "Content-Type": "application/json",
-      },
-      data: {
-        licenseCode: licenseCode,
-      },
-    });
-    return response.data;
-  } catch (error) {
-    console.error("Error al eliminar la cuenta:", error);
-    throw error;
-  }
-};
-
-// Función para hacer un POST con el token
 export const savePost = async (newPost) => {
   try {
-    // Recuperamos los datos almacenados en AsyncStorage
-    const storedData = await AsyncStorage.getItem("@licencias");
-    if (!storedData) {
-      throw new Error("No se encontró el token en AsyncStorage");
+    const baseUrl = await getBaseUrl();
+    if (baseUrl === DOCTA4_BASE_URL) {
+      // Si estamos en modo DOCTA 4, redirigimos a la función nueva de pánico
+      return await sendPanicDocta4(newPost);
     }
-    // Parseamos los datos
-    var parsedData = JSON.parse(storedData);
-    // Extraemos solo el accessToken
-    const accessToken = parsedData.token?.accessToken;
-    if (!accessToken) {
-      throw new Error("El accessToken es inválido o no está presente");
-    }
-    // Realizamos el POST utilizando el accessToken en el header Authorization
-    //console.log('parse', parsedData.result.licenseCreated.code)
-    var cuenta = parsedData.result.licenseCreated.code;
 
-    const response = await axios.post(API_EVENT, newPost, {
-      headers: {
-        Authorization: `Bearer ${accessToken}`,
-        "Content-Type": "application/json",
-      },
+    const api = await getEndpoints();
+    const token = await getAuthToken();
+    const response = await axios.post(api.event, newPost, {
+      headers: { 
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json"
+      }
     });
-    //console.log(response.status)
     return response.data;
   } catch (error) {
-    console.error("Error en savePost:", error);
     throw error;
   }
+};
+
+export const deleteLicenseAccount = async (licenseCode) => {
+  const api = await getEndpoints();
+  const response = await axios.delete(`${api.user}/delete-account`, { data: { licenseCode } });
+  return response.data;
 };

@@ -9,7 +9,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { deleteLicenseAccount } from "../util/Api";
 import AsyncStorageDumpButton from "../components/AsyncStorageDumpButton";
 
-function User({ navigation }) {
+function User({ navigation, activeProduct }) {
   const [licencia, setLicencia] = useState(null);
   const [isModalVisible, setIsModalVisible] = useState(false);
   const [isBorrarAccess, setIsBorrarAccess] = useState(false);
@@ -19,6 +19,12 @@ function User({ navigation }) {
   const [licenseInput, setLicenseInput] = useState("");
   const [isLicenseValid, setIsLicenseValid] = useState(null); // null, true, false
   const insets = useSafeAreaInsets();
+
+  // Función para obtener la clave de almacenamiento (espejada de App.js)
+  const getStorageKey = (product) => {
+    if (!product || product === "docta_panico" || product === "docta_legacy") return "@licencias";
+    return `@licencias_${product}`;
+  };
 
   // Función para traducir el estado
   const translateStatus = (status) => {
@@ -45,14 +51,12 @@ function User({ navigation }) {
   // Función para recuperar la licencia almacenada
   const loadLicencia = async () => {
     try {
-      const storedLicencia = await AsyncStorage.getItem("@licencias");
+      const specificKey = getStorageKey(activeProduct);
+      const storedLicencia = await AsyncStorage.getItem(specificKey);
       if (storedLicencia) {
         const parsedData = JSON.parse(storedLicencia);
 
-        //console.log("parseData", parsedData.result.licenseCreated.panicAppCode);
-
         setLicencia(parsedData.result.licenseCreated); // Accedemos a "licenseCreated"
-        //console.log(parsedData.result.licenseCreated);
       }
     } catch (error) {
       console.log("Error al cargar la licencia", error);
@@ -72,9 +76,10 @@ function User({ navigation }) {
   }, []);
 
   const Borrar = async () => {
-    await AsyncStorage.removeItem("@licencias");
+    const specificKey = getStorageKey(activeProduct);
+    await AsyncStorage.removeItem(specificKey);
     setLicencia(null);
-    console.log("borrado");
+    console.log(`Borrado de ${specificKey}`);
   };
 
   const handleAdminDelete = () => {
@@ -128,7 +133,8 @@ function User({ navigation }) {
           style: "destructive",
           onPress: async () => {
             // Borrado selectivo para no afectar claves de sistema de Expo
-            await AsyncStorage.removeItem("@licencias");
+            const specificKey = getStorageKey(activeProduct);
+            await AsyncStorage.removeItem(specificKey);
             await AsyncStorage.removeItem("@master_config");
             await AsyncStorage.removeItem("@master_token");
             
@@ -202,7 +208,8 @@ function User({ navigation }) {
       if (licencia && licencia.code) {
         await deleteLicenseAccount(licencia.code);
       }
-      await AsyncStorage.removeItem("@licencias");
+      const specificKey = getStorageKey(activeProduct);
+      await AsyncStorage.removeItem(specificKey);
       setLicencia(null);
       setIsDeleteModalVisible(false);
       Alert.alert("Éxito", "La licencia ha sido eliminada correctamente.", [

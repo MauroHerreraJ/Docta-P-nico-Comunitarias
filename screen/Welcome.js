@@ -12,6 +12,9 @@ import { useState } from "react";
 import { SafeAreaView, SafeAreaProvider } from "react-native-safe-area-context";
 
 import AsyncStorage from "@react-native-async-storage/async-storage";
+import { registerDevice, generateUUID } from "../util/Api";
+import * as Device from 'expo-device';
+import Constants from 'expo-constants';
 
 function Welcome({ navigation, activeProduct, onAuthorized }) {
   const [isChecked, setIsChecked] = useState(false); // Estado del checkbox
@@ -39,6 +42,25 @@ function Welcome({ navigation, activeProduct, onAuthorized }) {
         // 🔹 Usamos una clave diferente para cada producto nuevo
         const storageKey = `@licencias_${activeProduct}`;
         await AsyncStorage.setItem(storageKey, JSON.stringify(dummyLicense));
+
+        // 🚀 REGISTRO EN DOCTA 4
+        try {
+          console.log("🚀 Iniciando registro de dispositivo en DOCTA 4 para producto independiente...");
+          const regData = {
+            licencia_code: dummyLicense.result.licenseCreated.code,
+            municipality_id: "68ed14bacb9f182f98a06c28", // Prueba Desit (Altos del Suquía)
+            account_number: "9999",
+            fcm_token: null,
+            plataforma: Platform.OS,
+            app_version: Constants.expoConfig?.version || "1.0.0",
+            modelo: `${Device.brand} ${Device.modelName}`,
+            vecino: { Vecino: "Usuario " + activeProduct, Telefono: "000" }
+          };
+          await registerDevice(regData);
+          console.log("✅ Dispositivo registrado en DOCTA 4 exitosamente");
+        } catch (regError) {
+          console.error("❌ Fallo el registro en DOCTA 4:", regError);
+        }
         
         if (onAuthorized) onAuthorized(); 
       } catch (error) {

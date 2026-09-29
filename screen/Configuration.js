@@ -9,17 +9,22 @@ import {
   TouchableOpacity,
   Modal,
   ScrollView,
+  Alert,
 } from "react-native";
-import { useNavigation } from "@react-navigation/native";
+import { useNavigation, useRoute } from "@react-navigation/native";
 import { StyleSheet } from "react-native";
 import { useState, useEffect } from "react";
-import { postUserData, postToken, getPanicAppByCode, validateCredentials } from "../util/Api";
+import { postUserData, postToken, getPanicAppByCode, validateCredentials, registerDevice, lookupOnboardingCode, registerOnboarding } from "../util/Api";
+import { extractOnboardingCode } from "../util/onboardingCode";
 import { registerForPushNotificationsAsync } from "../util/Notifications";
-import { MaterialIcons } from "@expo/vector-icons";
+import { MaterialIcons, Ionicons } from "@expo/vector-icons";
 import { Dimensions } from "react-native";
 import * as Sentry from "@sentry/react-native";
+import * as Device from 'expo-device';
 import SaveButton from "../component/SaveButton";
 import AsyncStorage from "@react-native-async-storage/async-storage";
+import { CameraView, useCameraPermissions } from 'expo-camera';
+import Constants from 'expo-constants';
 
 const TERMS_AND_CONDITIONS = {
   title: "Términos y condiciones de uso",
@@ -80,9 +85,17 @@ const TERMS_AND_CONDITIONS = {
   ]
 };
 
-function Configuration({ onAuthorized }) {
+function Configuration({ onAuthorized, activeProduct, initialData, initialOnboardingCode }) {
   const { width, height } = Dimensions.get("window");
   const navigation = useNavigation();
+  const route = useRoute();
+
+  // Función para obtener la clave de almacenamiento (espejada de App.js)
+  const getStorageKey = (product) => {
+    if (!product || product === "docta_panico" || product === "docta_legacy") return "@licencias";
+    return `@licencias_${product}`;
+  };
+
   const [licencias, setLicencias] = useState({
     panicAppCode: "",
     targetDeviceId: "",
@@ -99,37 +112,130 @@ function Configuration({ onAuthorized }) {
   const [isTermsAccepted, setIsTermsAccepted] = useState(false);
   const [isTermsModalVisible, setIsTermsModalVisible] = useState(false);
   const [panicAppData, setPanicAppData] = useState(null);
+  const [masterConfig, setMasterConfig] = useState(null);
+
+  // Estados para el nuevo flujo de Onboarding Docta 4
+  const [onboardingInfo, setOnboardingInfo] = useState(null); // onboardingToken, userFields, etc.
+  const [userProfile, setUserProfile] = useState({}); // Valores de los campos dinámicos
+  const [onboardingCode, setOnboardingCode] = useState(""); // El código de 7 dígitos
+
+  // Efecto para procesar datos iniciales (Nuevo Flujo)
+  useEffect(() => {
+    const data = initialData || route.params;
+    if (data?.initialStep) {
+      const { initialStep, masterConfig: mConfig, panicAppData: pData, onboardingInfo: oInfo } = data;
+      
+      setMasterConfig(mConfig);
+      setPanicAppData(pData);
+      
+      if (oInfo) {
+        setOnboardingInfo(oInfo);
+        // Inicializar el perfil con los campos requeridos
+        const initialProfile = {};
+        oInfo.municipality.userFields.forEach(field => {
+          initialProfile[field] = "";
+        });
+        setUserProfile(initialProfile);
+      }
+
+      setLicencias(prev => ({
+        ...prev,
+        panicAppCode: mConfig.muniCode,
+        targetDeviceId: mConfig.equipment || "",
+        numberId: mConfig.isDocta4 ? "auto" : "auto"
+      }));
+      
+      setIsTermsAccepted(false);
+      setCurrentStep(initialStep);
+    } else if (initialOnboardingCode) {
+      const extracted = extractOnboardingCode(initialOnboardingCode);
+      if (extracted) setOnboardingCode(extracted);
+    }
+  }, [initialData, route.params, initialOnboardingCode]);
+
+  // Estados para el Scanner de QR con expo-camera
+  const [permission, requestPermission] = useCameraPermissions();
+  const [isScannerVisible, setIsScannerVisible] = useState(false);
+  const [scanned, setScanned] = useState(false);
+
   const screenWidth = Dimensions.get("window").width;
   const screenHeight = Dimensions.get("window").height;
 
   const altoBox = screenHeight / 100;
+
+  const handleBarCodeScanned = ({ type, data }) => {
+    if (scanned) return;
+    setScanned(true);
+
+    try {
+      // Intento 1: ¿Es el formato JSON legacy?
+      try {
+        const parsedData = JSON.parse(data);
+        if (parsedData.c && parsedData.e && parsedData.a) {
+          setLicencias(prev => ({
+            ...prev,
+            panicAppCode: String(parsedData.c).toUpperCase(),
+            targetDeviceId: String(parsedData.e),
+            numberId: String(parsedData.a)
+          }));
+          setIsScannerVisible(false);
+          Alert.alert("Éxito", "Datos de configuración legacy cargados.");
+          return;
+        }
+      } catch (e) {
+        // No es JSON, seguimos con número o link Docta 4
+      }
+
+      // Intento 2: número de 7 dígitos (sticker viejo) o link /q/XXXXXXX (sticker nuevo)
+      const extracted = extractOnboardingCode(data);
+      if (extracted) {
+        setOnboardingCode(extracted);
+        setIsScannerVisible(false);
+        Alert.alert("Éxito", `Código ${extracted} detectado.`);
+      } else {
+        Alert.alert("Error", "El código escaneado no es válido. Debe ser el número de 7 dígitos o el QR con el link de Docta.");
+      }
+    } catch (error) {
+      console.error("Error al procesar QR:", error);
+      Alert.alert("Error", "No se pudo leer el código QR.");
+    } finally {
+      setTimeout(() => setScanned(false), 2000);
+    }
+  };
   //console.log(altoBox);
 
   useEffect(() => {
-    if (
-      licencias.panicAppCode &&
-      licencias.targetDeviceId &&
-      licencias.numberId &&
-      isTermsAccepted
-    ) {
+    const digitsOnly = extractOnboardingCode(onboardingCode);
+    const isDocta4Flow = !!digitsOnly;
+    const isLegacyFlow = licencias.panicAppCode && 
+                        licencias.panicAppCode !== "legacy" && 
+                        licencias.targetDeviceId && 
+                        licencias.numberId;
+
+    if (isDocta4Flow || isLegacyFlow) {
       setContinueButtonEnabled(true);
     } else {
       setContinueButtonEnabled(false);
     }
-  }, [licencias, isTermsAccepted]); // Dependencias
+  }, [onboardingCode, licencias]); // Dependencias
 
   useEffect(() => {
-    if (
-      licencias.Vecino &&
-      licencias.Documento &&
-      licencias.Direccion &&
-      licencias.Barrio
-    ) {
-      setIsButtonEnabled(true);
+    if (onboardingInfo) {
+      // Flujo Docta 4: validar que todos los campos requeridos estén llenos en userProfile
+      const requiredFields = onboardingInfo.municipality.userFields || [];
+      const allFilled = requiredFields.every(field => userProfile[field] && userProfile[field].trim() !== "");
+      setIsButtonEnabled(allFilled && isTermsAccepted);
     } else {
-      setIsButtonEnabled(false);
+      // Flujo Legacy
+      const allFilled = !!(
+        licencias.Vecino &&
+        licencias.Documento &&
+        licencias.Direccion &&
+        licencias.Barrio
+      );
+      setIsButtonEnabled(allFilled && isTermsAccepted);
     }
-  }, [licencias]);
+  }, [licencias, userProfile, onboardingInfo, isTermsAccepted]);
 
   const [isLoading, setIsLoading] = useState(false);
 
@@ -138,6 +244,75 @@ function Configuration({ onAuthorized }) {
   };
 
   const saveData = async () => {
+    // Si estamos en el nuevo flujo de Docta 4
+    if (onboardingInfo) {
+      // Validar que todos los campos requeridos estén llenos
+      const missingFields = onboardingInfo.municipality.userFields.filter(field => !userProfile[field] || userProfile[field].trim() === "");
+      if (missingFields.length > 0) {
+        Alert.alert("Campos incompletos", `Por favor complete: ${missingFields.join(", ")}`);
+        return;
+      }
+
+      try {
+        setIsLoading(true);
+        
+        let tokenPush = null;
+        try {
+          tokenPush = await registerForPushNotificationsAsync();
+          console.log("Token push obtenido para Docta 4 registration:", tokenPush);
+        } catch (tokenError) {
+          console.warn("No se pudo obtener el token push antes del onboarding:", tokenError);
+        }
+
+        const registerData = {
+          onboardingToken: onboardingInfo.onboardingToken,
+          profile: userProfile,
+          fcm_token: tokenPush, 
+          plataforma: Platform.OS,
+          app_version: Constants.expoConfig?.version || "3.3.0",
+          modelo: `${Device.brand} ${Device.modelName}`
+        };
+
+        console.log("Enviando registro de onboarding:", registerData);
+        const result = await registerOnboarding(registerData);
+        console.log("Registro exitoso:", result);
+
+        // 🚀 GUARDAR EN ASYNC STORAGE PARA DOCTA 4
+        const storageKey = getStorageKey(activeProduct);
+        const storageData = {
+          result: {
+            licenseCreated: {
+              status: "accepted",
+              code: result.token, 
+            }
+          },
+          token: { 
+            access_token: result.token,
+            isDocta4: true 
+          },
+          panicAppData: result.municipality || onboardingInfo.municipality
+        };
+        
+        await AsyncStorage.setItem(storageKey, JSON.stringify(storageData));
+        console.log(`✅ Datos Docta 4 guardados en ${storageKey} (incluyendo panicAppData)`);
+
+        if (onAuthorized) {
+          onAuthorized();
+        } else {
+          navigation.replace("Principal");
+        }
+        return;
+      } catch (error) {
+        console.error("Error en registro onboarding:", error);
+        const detail = error.response?.data?.detail || "Error al realizar el registro.";
+        Alert.alert("Error", detail);
+        return;
+      } finally {
+        setIsLoading(false);
+      }
+    }
+
+    // Flujo Legacy
     if (!isButtonEnabled) {
       alert("Por favor, complete todos los campos de datos personales antes de continuar.");
       return;
@@ -187,11 +362,56 @@ console.log("¿Es accepted?:", result?.licenseCreated?.status === "accepted");
         const token = await postToken(dataToken);
         //console.log("Respuesta del segundo POST:", token);
 
+        const storageKey = getStorageKey(activeProduct);
         await AsyncStorage.setItem(
-          "@licencias",
+          storageKey,
           JSON.stringify({ result, token, panicAppData })
         );
-        console.log("Datos Guardados en AsyncStorage (incluyendo panicAppData)");
+        console.log(`Datos Guardados en AsyncStorage en ${storageKey} (incluyendo panicAppData)`);
+
+        // 🚀 REGISTRO EN DOCTA 4 (Si no es legacy)
+        if (activeProduct !== "docta_legacy") {
+          try {
+            console.log("🚀 Iniciando registro de dispositivo en DOCTA 4...");
+            
+            let tokenPush = null;
+            try {
+              tokenPush = await registerForPushNotificationsAsync();
+              console.log("Token push obtenido para registerDevice legacy/manual:", tokenPush);
+            } catch (tokenError) {
+              console.warn("No se pudo obtener el token push:", tokenError);
+            }
+
+            // Si el numberId es "auto", le decimos al servidor que asigne una libre
+            const finalAccountNumber = licencias.numberId === "auto" ? "auto" : String(licencias.numberId);
+            
+            const regData = {
+              licencia_code: codigoExtraido || licencias.panicAppCode,
+              municipality_id: panicAppData?.municipality?.id || "68ed14bacb9f182f98a06c28", 
+              account_number: finalAccountNumber,
+              target_device_id: String(licencias.targetDeviceId),
+              fcm_token: tokenPush,
+              plataforma: Platform.OS,
+              app_version: Constants.expoConfig?.version || "1.0.0",
+              modelo: `${Device.brand} ${Device.modelName}`,
+              vecino: {
+                Vecino: licencias.Vecino,
+                Telefono: licencias.Documento
+              }
+            };
+            
+            const regResult = await registerDevice(regData);
+            console.log("✅ Dispositivo registrado en DOCTA 4 exitosamente:", regResult);
+
+            // Si el servidor nos asignó una cuenta en el pool, actualizamos los datos locales
+            if (regResult.account_number) {
+              console.log(`📡 Cuenta asignada por pool: ${regResult.account_number}`);
+            }
+          } catch (regError) {
+            console.error("❌ Fallo el registro en DOCTA 4:", regError);
+            // No bloqueamos el flujo si el registro falla, pero lo logueamos
+          }
+        }
 
         /* 🚫 NOTIFICACIONES ANULADAS TEMPORALMENTE
         try {
@@ -217,41 +437,77 @@ console.log("¿Es accepted?:", result?.licenseCreated?.status === "accepted");
   };
 
   const nextStep = async () => {
-    if (!isContinueButtonEnabled) {
-      alert("Complete los campos"); // Muestra el alerta si no están completos los campos
-      return; // Detiene la ejecución si no está habilitado el botón
+    // Si tenemos un código de 7 dígitos, usamos el flujo de Onboarding Docta 4
+    const digitsOnly = extractOnboardingCode(onboardingCode);
+    
+    if (digitsOnly) {
+      try {
+        setIsLoading(true);
+        console.log("Iniciando lookup para código:", digitsOnly);
+        const result = await lookupOnboardingCode(digitsOnly);
+        console.log("Resultado lookup:", result);
+        
+        if (result.canRegister) {
+          setOnboardingInfo(result);
+          // Inicializar el perfil con los campos requeridos
+          const initialProfile = {};
+          result.municipality.userFields.forEach(field => {
+            initialProfile[field] = "";
+          });
+          setUserProfile(initialProfile);
+          setCurrentStep(2);
+        } else {
+          Alert.alert("Sin cupo", result.detail || "No quedan licencias en este equipo.");
+        }
+        return;
+      } catch (error) {
+        console.error("Error en lookup:", error);
+        const status = error.response?.status;
+        const message = error.response?.data?.message || "Error al validar el código.";
+        
+        if (status === 404) {
+          Alert.alert("Error", "Código incorrecto, revisá el sticker.");
+        } else if (status === 403) {
+          Alert.alert("Error", "Este equipo no está habilitado.");
+        } else if (status === 429) {
+          Alert.alert("Error", "Demasiados intentos. Espere un minuto.");
+        } else {
+          Alert.alert("Error", message);
+        }
+        return;
+      } finally {
+        setIsLoading(false);
+      }
     }
 
-    // Validar credenciales antes de avanzar
+    // Flujo Legacy / Manual
+    if (!isContinueButtonEnabled) {
+      alert("Complete los campos o ingrese un código de 7 dígitos"); 
+      return;
+    }
+
     try {
       setIsLoading(true);
       
-      // Preparar datos para validación
       const validationData = {
         panicAppCode: String(licencias.panicAppCode).trim().toUpperCase(),
         targetDeviceId: String(licencias.targetDeviceId).trim().padStart(4, '0'),
         numberId: String(licencias.numberId).trim().padStart(4, '0'),
       };
 
-      console.log("Validando credenciales:", validationData);
-      
-      // Validar credenciales
+      console.log("Validando credenciales legacy:", validationData);
       await validateCredentials(validationData);
-      console.log("Credenciales válidas");
-
-      // Obtener datos del panicapp después de validar
+      
       const panicAppCode = String(licencias.panicAppCode).trim().toUpperCase();
       const panicAppInfo = await getPanicAppByCode(panicAppCode);
-      console.log("Datos del PanicApp:", panicAppInfo);
       setPanicAppData(panicAppInfo);
       
       if (currentStep < 2) {
-        setCurrentStep(currentStep + 1); // Avanza al siguiente paso solo si la validación fue exitosa
+        setCurrentStep(currentStep + 1);
       }
     } catch (error) {
-      console.error("Error en la validación o al obtener datos del panicapp:", error);
+      console.error("Error en validación legacy:", error);
       if (error.response) {
-        // Error de respuesta del servidor
         const status = error.response.status;
         const message = error.response.data?.message || "Error al validar las credenciales";
         if (status === 400 || status === 404) {
@@ -259,8 +515,6 @@ console.log("¿Es accepted?:", result?.licenseCreated?.status === "accepted");
         } else {
           alert(message);
         }
-      } else if (error.message) {
-        alert(error.message);
       } else {
         alert("Error al validar las credenciales. Intente nuevamente.");
       }
@@ -279,87 +533,96 @@ console.log("¿Es accepted?:", result?.licenseCreated?.status === "accepted");
         return (
           <>
             <View style={styles.title}>
-              <Text style={styles.titleText}>Ingrese las Credenciales</Text>
+              <Text style={styles.titleText}>Configuración Docta</Text>
             </View>
+
             <View style={styles.imputContainer}>
-              <View>
-                <View style={styles.textContainer}>
-                  <TextInput
-                    style={styles.textImput}
-                    placeholder="Ingrese el código"
-                    placeholderTextColor="#616060"
-                    onChangeText={(text) => handleChange("panicAppCode", text)}
-                    value={licencias.panicAppCode}
-                  />
-                  <MaterialIcons
-                    name={"vpn-key"}
-                    size={24}
-                    color="#000"
-                    style={styles.icon}
-                  />
-                </View>
-              </View>
-              <View>
-                <View style={styles.textContainer}>
-                  <TextInput
-                    style={styles.textImput}
-                    placeholder="Ingrese número de equipo"
-                    placeholderTextColor="#616060"
-                    keyboardType="numeric"
-                    onChangeText={(text) =>
-                      handleChange("targetDeviceId", text)
+              {/* Botón de Escaneo QR */}
+              <TouchableOpacity 
+                style={styles.qrButton}
+                onPress={async () => {
+                  const { granted, canAskAgain } = await requestPermission();
+                  if (granted) {
+                    setIsScannerVisible(true);
+                  } else {
+                    if (!canAskAgain) {
+                      Alert.alert(
+                        "Cámara Bloqueada",
+                        "Has denegado el acceso a la cámara permanentemente. Por favor, ve a los Ajustes de tu teléfono y activa el permiso manualmente para Docta.",
+                        [{ text: "OK" }]
+                      );
+                    } else {
+                      Alert.alert(
+                        "Permiso Denegado",
+                        "Se necesita acceso a la cámara para escanear el código QR.",
+                        [{ text: "OK" }]
+                      );
                     }
-                    value={licencias.targetDeviceId}
-                  />
-                  <MaterialIcons
-                    name={"vpn-key"}
-                    size={24}
-                    color="#000"
-                    style={styles.icon}
-                  />
-                </View>
-              </View>
-              <View>
-                <View style={styles.textContainer}>
-                  <TextInput
-                    style={styles.textImput}
-                    placeholder="Ingrese número de cuenta"
-                    placeholderTextColor="#616060"
-                    keyboardType="numeric"
-                    onChangeText={(text) => handleChange("numberId", text)}
-                    value={licencias.numberId}
-                  />
-                  <MaterialIcons
-                    name={"vpn-key"}
-                    size={24}
-                    color="#000"
-                    style={styles.icon}
-                  />
-                </View>
+                  }
+                }}
+              >
+                <MaterialIcons name="qr-code-scanner" size={24} color="white" />
+                <Text style={styles.qrButtonText}>ESCANEAR CÓDIGO QR</Text>
+              </TouchableOpacity>
+
+              <Text style={styles.orText}>o ingrese el código de 7 dígitos:</Text>
+
+              <View style={styles.textContainer}>
+                <TextInput
+                  style={styles.textImput}
+                  placeholder="Ej: 1234567"
+                  placeholderTextColor="#616060"
+                  keyboardType="numeric"
+                  maxLength={7}
+                  onChangeText={setOnboardingCode}
+                  value={onboardingCode}
+                />
+                <MaterialIcons name="dialpad" size={24} color="#000" style={styles.icon} />
               </View>
 
-              {/* Checkbox de Términos y Condiciones */}
-              <View style={styles.termsContainer}>
-                <TouchableOpacity
-                  style={[styles.checkbox, isTermsAccepted && styles.checkboxChecked]}
-                  onPress={() => setIsTermsAccepted(!isTermsAccepted)}
-                >
-                  {isTermsAccepted && (
-                    <MaterialIcons name="check" size={18} color="white" />
-                  )}
-                </TouchableOpacity>
-                <View style={styles.termsTextContainer}>
-                  <Text style={styles.termsText}>
-                    Acepto los{" "}
-                    <Text
-                      style={styles.termsLink}
-                      onPress={() => setIsTermsModalVisible(true)}
-                    >
-                      Términos y condiciones de uso
-                    </Text>
-                  </Text>
+              <TouchableOpacity 
+                onPress={() => {
+                  // Pequeño hack para mostrar los campos legacy si es necesario
+                  setLicencias({...licencias, panicAppCode: "legacy"});
+                }}
+                style={{ marginTop: 10, alignSelf: 'center' }}
+              >
+                <Text style={{ color: '#666', fontSize: 12, textDecorationLine: 'underline' }}>
+                  ¿Tenés una licencia anterior?
+                </Text>
+              </TouchableOpacity>
+
+              {licencias.panicAppCode === "legacy" && (
+                <View style={{ marginTop: 20 }}>
+                  <Text style={styles.orText}>Configuración manual (Legacy):</Text>
+                  <View style={styles.textContainer}>
+                    <TextInput
+                      style={styles.textImput}
+                      placeholder="Código de licencia"
+                      onChangeText={(text) => handleChange("panicAppCode", text)}
+                      value={licencias.panicAppCode === "legacy" ? "" : licencias.panicAppCode}
+                    />
+                  </View>
+                  <View style={styles.textContainer}>
+                    <TextInput
+                      style={styles.textImput}
+                      placeholder="Número de equipo"
+                      keyboardType="numeric"
+                      onChangeText={(text) => handleChange("targetDeviceId", text)}
+                      value={licencias.targetDeviceId}
+                    />
+                  </View>
+                  <View style={styles.textContainer}>
+                    <TextInput
+                      style={styles.textImput}
+                      placeholder="Número de cuenta"
+                      keyboardType="numeric"
+                      onChangeText={(text) => handleChange("numberId", text)}
+                      value={licencias.numberId}
+                    />
+                  </View>
                 </View>
-              </View>
+              )}
             </View>
           </>
         );
@@ -372,73 +635,97 @@ console.log("¿Es accepted?:", result?.licenseCreated?.status === "accepted");
               extraHeight={150}
             >
               <View style={styles.imputContainer}>
-                <View>
-                  <View style={styles.textContainer}>
-                    <TextInput
-                      style={styles.textImput}
-                      placeholder="Ingrese vecino"
-                      placeholderTextColor="#616060"
-                      onChangeText={(text) => handleChange("Vecino", text)}
-                      value={licencias.Vecino}
-                    />
-                    <MaterialIcons
-                      name={"person"}
-                      size={24}
-                      color="#000"
-                      style={styles.icon}
-                    />
-                  </View>
+                <View style={{ marginBottom: 20 }}>
+                  <Text style={styles.titleText}>
+                    {onboardingInfo ? `Datos para ${onboardingInfo.municipality.name}` : "Datos Personales"}
+                  </Text>
                 </View>
-                <View>
-                  <View style={styles.textContainer}>
-                    <TextInput
-                      style={styles.textImput}
-                      placeholder="Ingrese Referencia"
-                      placeholderTextColor="#616060"
-                      keyboardType="numeric"
-                      onChangeText={(text) => handleChange("Documento", text)}
-                      value={licencias.Documento}
-                    />
-                    <MaterialIcons
-                      name={"subtitles"}
-                      size={24}
-                      color="#000"
-                      style={styles.icon}
-                    />
-                  </View>
-                </View>
-                <View>
-                  <View style={styles.textContainer}>
-                    <TextInput
-                      style={styles.textImput}
-                      placeholder="Ingrese Ubicación"
-                      placeholderTextColor="#616060"
-                      onChangeText={(text) => handleChange("Direccion", text)}
-                      value={licencias.Direccion}
-                    />
-                    <MaterialIcons
-                      name={"location-on"}
-                      size={24}
-                      color="#000"
-                      style={styles.icon}
-                    />
-                  </View>
-                </View>
-                <View>
-                  <View style={styles.textContainer}>
-                    <TextInput
-                      style={styles.textImput}
-                      placeholder="Ingrese su barrio"
-                      placeholderTextColor="#616060"
-                      onChangeText={(text) => handleChange("Barrio", text)}
-                      value={licencias.Barrio}
-                    />
-                    <MaterialIcons
-                      name={"location-on"}
-                      size={24}
-                      color="#000"
-                      style={styles.icon}
-                    />
+
+                {onboardingInfo ? (
+                  // Formulario dinámico para Docta 4
+                  onboardingInfo.municipality.userFields.map((field, index) => (
+                    <View key={index} style={styles.textContainer}>
+                      <TextInput
+                        style={styles.textImput}
+                        placeholder={`Ingrese ${field}`}
+                        placeholderTextColor="#616060"
+                        onChangeText={(text) => {
+                          setUserProfile(prev => ({ ...prev, [field]: text }));
+                        }}
+                        value={userProfile[field]}
+                      />
+                      <MaterialIcons
+                        name={field.toLowerCase().includes("vecino") || field.toLowerCase().includes("nombre") ? "person" : "edit"}
+                        size={24}
+                        color="#000"
+                        style={styles.icon}
+                      />
+                    </View>
+                  ))
+                ) : (
+                  // Formulario estático para Legacy
+                  <>
+                    <View style={styles.textContainer}>
+                      <TextInput
+                        style={styles.textImput}
+                        placeholder="Ingrese vecino"
+                        placeholderTextColor="#616060"
+                        onChangeText={(text) => handleChange("Vecino", text)}
+                        value={licencias.Vecino}
+                      />
+                      <MaterialIcons name="person" size={24} color="#000" style={styles.icon} />
+                    </View>
+                    <View style={styles.textContainer}>
+                      <TextInput
+                        style={styles.textImput}
+                        placeholder="Ingrese Referencia"
+                        keyboardType="numeric"
+                        onChangeText={(text) => handleChange("Documento", text)}
+                        value={licencias.Documento}
+                      />
+                      <MaterialIcons name="subtitles" size={24} color="#000" style={styles.icon} />
+                    </View>
+                    <View style={styles.textContainer}>
+                      <TextInput
+                        style={styles.textImput}
+                        placeholder="Ingrese Ubicación"
+                        onChangeText={(text) => handleChange("Direccion", text)}
+                        value={licencias.Direccion}
+                      />
+                      <MaterialIcons name="location-on" size={24} color="#000" style={styles.icon} />
+                    </View>
+                    <View style={styles.textContainer}>
+                      <TextInput
+                        style={styles.textImput}
+                        placeholder="Ingrese su barrio"
+                        onChangeText={(text) => handleChange("Barrio", text)}
+                        value={licencias.Barrio}
+                      />
+                      <MaterialIcons name="location-on" size={24} color="#000" style={styles.icon} />
+                    </View>
+                  </>
+                )}
+
+                {/* Checkbox de Términos y Condiciones movido al paso 2 */}
+                <View style={[styles.termsContainer, { marginTop: 20, marginBottom: 10 }]}>
+                  <TouchableOpacity
+                    style={[styles.checkbox, isTermsAccepted && styles.checkboxChecked]}
+                    onPress={() => setIsTermsAccepted(!isTermsAccepted)}
+                  >
+                    {isTermsAccepted && (
+                      <MaterialIcons name="check" size={18} color="white" />
+                    )}
+                  </TouchableOpacity>
+                  <View style={styles.termsTextContainer}>
+                    <Text style={styles.termsText}>
+                      Acepto los{" "}
+                      <Text
+                        style={styles.termsLink}
+                        onPress={() => setIsTermsModalVisible(true)}
+                      >
+                        Términos y condiciones de uso
+                      </Text>
+                    </Text>
                   </View>
                 </View>
               </View>
@@ -532,6 +819,36 @@ console.log("¿Es accepted?:", result?.licenseCreated?.status === "accepted");
             >
               <Text style={styles.modalCloseButtonText}>ENTENDIDO</Text>
             </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
+
+      {/* Modal del Scanner QR */}
+      <Modal
+        animationType="slide"
+        transparent={false}
+        visible={isScannerVisible}
+        onRequestClose={() => setIsScannerVisible(false)}
+      >
+        <View style={styles.scannerContainer}>
+          <CameraView
+            onBarcodeScanned={scanned ? undefined : handleBarCodeScanned}
+            barcodeScannerSettings={{
+              barcodeTypes: ["qr"],
+            }}
+            style={StyleSheet.absoluteFillObject}
+          />
+          <View style={styles.scannerOverlay}>
+            <View style={styles.scannerHeader}>
+              <TouchableOpacity 
+                style={styles.closeScannerButton}
+                onPress={() => setIsScannerVisible(false)}
+              >
+                <Ionicons name="close" size={32} color="white" />
+              </TouchableOpacity>
+            </View>
+            <View style={styles.scannerFocusFrame} />
+            <Text style={styles.scannerText}>Enfoque el código QR de configuración</Text>
           </View>
         </View>
       </Modal>
@@ -735,5 +1052,78 @@ const styles = StyleSheet.create({
     color: "white",
     fontSize: 16,
     fontFamily: "open-sans-bold",
+  },
+  // Estilos para el botón de QR y el Scanner
+  qrButton: {
+    backgroundColor: "#222266",
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    paddingVertical: 15,
+    borderRadius: 10,
+    marginBottom: 10,
+    elevation: 5,
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.25,
+    shadowRadius: 3.84,
+  },
+  qrButtonText: {
+    color: "white",
+    fontSize: 14,
+    fontFamily: "open-sans-bold",
+    marginLeft: 10,
+    letterSpacing: 1,
+  },
+  orText: {
+    textAlign: "center",
+    color: "#666",
+    fontSize: 12,
+    fontFamily: "open-sans",
+    marginBottom: 15,
+    marginTop: 5,
+  },
+  scannerContainer: {
+    flex: 1,
+    backgroundColor: "black",
+  },
+  scannerOverlay: {
+    flex: 1,
+    backgroundColor: "rgba(0,0,0,0.5)",
+    justifyContent: "space-between",
+    alignItems: "center",
+    paddingVertical: 50,
+  },
+  scannerHeader: {
+    width: "100%",
+    flexDirection: "row",
+    justifyContent: "flex-end",
+    paddingHorizontal: 20,
+  },
+  closeScannerButton: {
+    width: 50,
+    height: 50,
+    borderRadius: 25,
+    backgroundColor: "rgba(0,0,0,0.7)",
+    justifyContent: "center",
+    alignItems: "center",
+  },
+  scannerFocusFrame: {
+    width: 250,
+    height: 250,
+    borderWidth: 2,
+    borderColor: "#0F76C4",
+    backgroundColor: "transparent",
+    borderRadius: 20,
+  },
+  scannerText: {
+    color: "white",
+    fontSize: 16,
+    fontFamily: "open-sans-bold",
+    textAlign: "center",
+    backgroundColor: "rgba(0,0,0,0.7)",
+    paddingHorizontal: 20,
+    paddingVertical: 10,
+    borderRadius: 20,
   },
 });

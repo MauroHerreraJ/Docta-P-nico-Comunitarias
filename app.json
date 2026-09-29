@@ -47,7 +47,7 @@
         {
           "android": {
             "compileSdkVersion": 36,
-            "targetSdkVersion": 36,
+            "targetSdkVersion": 35,
             "minSdkVersion": 24,
             "buildToolsVersion": "36.0.0"
           }
@@ -56,17 +56,16 @@
       [
         "expo-location",
         {
-          locationAlwaysAndWhenInUsePermission:
-            "Vigicontrol usa tu ubicación durante el servicio, incluso con la app en segundo plano, para enviar la posición a la central. Se detiene al cerrar sesión.",
-          locationWhenInUsePermission:
-            "Vigicontrol usa tu ubicación durante el servicio para enviar la posición a la central.",
-          isIosBackgroundLocationEnabled: true,
-          isAndroidBackgroundLocationEnabled: true,
-          isAndroidForegroundServiceEnabled: true,
+          "locationAlwaysAndWhenInUsePermission": "Vigicontrol usa tu ubicación durante el servicio, incluso con la app en segundo plano, para enviar la posición a la central. Se detiene al cerrar sesión.",
+          "locationWhenInUsePermission": "Vigicontrol usa tu ubicación durante el servicio para enviar la posición a la central.",
+          "isIosBackgroundLocationEnabled": true,
+          "isAndroidBackgroundLocationEnabled": true,
+          "isAndroidForegroundServiceEnabled": true
         }
       ],
       "expo-task-manager",
       "expo-audio",
+      "expo-camera",
       [
         "expo-speech-recognition",
         {
@@ -87,6 +86,9 @@
       "supportsTablet": true,
       "bundleIdentifier": "com.pedrodarrigo.DesitAppV33",
       "buildNumber": "2",
+      "associatedDomains": [
+        "applinks:docta-4-sm-front-dev.web.app"
+      ],
       "infoPlist": {
         "ITSAppUsesNonExemptEncryption": false,
         "NSFaceIDUsageDescription": "Vigicontrol usa Face ID para desbloquear tu usuario en el ingreso.",
@@ -107,12 +109,27 @@
         "FOREGROUND_SERVICE",
         "FOREGROUND_SERVICE_LOCATION",
         "POST_NOTIFICATIONS",
-        "RECORD_AUDIO"
+        "RECORD_AUDIO",
+        "CAMERA"
       ],
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
         "backgroundColor": "#0066CC"
-      }
+      },
+      "intentFilters": [
+        {
+          "action": "VIEW",
+          "autoVerify": true,
+          "data": [
+            {
+              "scheme": "https",
+              "host": "docta-4-sm-front-dev.web.app",
+              "pathPrefix": "/q/"
+            }
+          ],
+          "category": ["BROWSABLE", "DEFAULT"]
+        }
+      ]
     },
     "web": {
       "favicon": "./assets/favicon.png"

@@ -10,11 +10,13 @@ import { NavigationContainer } from "@react-navigation/native";
 import { createNativeStackNavigator } from "@react-navigation/native-stack";
 import { createBottomTabNavigator } from "@react-navigation/bottom-tabs";
 import { Ionicons } from "@expo/vector-icons";
-import { Image, Modal, View, Text, TouchableOpacity, StyleSheet, Alert, ActivityIndicator, ScrollView } from "react-native";
+import { Image, Modal, View, Text, TouchableOpacity, StyleSheet, Alert, ActivityIndicator, ScrollView, Platform } from "react-native";
 import AsyncStorageDumpButton from "./components/AsyncStorageDumpButton";
 import { useFonts } from "expo-font";
 import * as SplashScreen from "expo-splash-screen";
 import { useEffect, useState, useRef } from "react";
+import * as Linking from "expo-linking";
+import * as Application from "expo-application";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { Asset } from "expo-asset";
 import AllButtons from "./screen/AllButtons";
@@ -34,7 +36,8 @@ import NovedadesTurno from "./screen/Vigicontrol/NovedadesTurno";
 import HombreVivoTurno from "./screen/Vigicontrol/HombreVivoTurno";
 import AccesosTurno from "./screen/Vigicontrol/AccesosTurno";
 import HombreVivoAlerta from "./screen/Vigicontrol/HombreVivoAlerta";
-import { getPanicAppByCode, registerNotificationToken } from "./util/Api";
+import { getPanicAppByCode, registerNotificationToken, onUnauthorized } from "./util/Api";
+import { extractOnboardingCode } from "./util/onboardingCode";
 import {
   getDeviceIdentity,
   sendDeviceIdentity,
@@ -147,9 +150,12 @@ function VigiHomeNavigator({ onActivateMultimedia, onSalirServicio, productName 
 
 // 🔹 Función para obtener la clave de almacenamiento según el producto
 const getStorageKey = (product) => {
-  if (!product || product === "docta_panico") return "@licencias";
+  if (!product || product === "docta_panico" || product === "docta_legacy") return "@licencias";
   return `@licencias_${product}`;
 };
+
+const isDoctaProduct = (product) =>
+  product === "docta_panico" || product === "docta_legacy" || product === "docta_comunitarias";
 
 // 🔹 Clave que indica que Vigilantes ya está activado en este dispositivo.
 // Si existe, la app entra directo a HomeVigi sin pasar por MasterCode ni Welcome.
@@ -320,33 +326,41 @@ function shouldUpdatePanicAppData(parsedData) {
   return false;
 }
 
-function AuthorizedNavigation() {
+function AuthorizedNavigation({ activeProduct }) {
   const [logoUrl, setLogoUrl] = useState("https://i.imgur.com/aIYhRsN.png");
   const [headerBgColor, setHeaderBgColor] = useState("white");
   const [headerTxtColor, setHeaderTxtColor] = useState("Black");
-  const [isMultimediaEnabled, setIsMultimediaEnabled] = useState(false);
+  const [activePanicId, setActivePanicId] = useState(null);
   const timerRef = useRef(null);
 
-  const activateMultimedia = () => {
-    setIsMultimediaEnabled(true);
+  const activateMultimedia = (serverResult) => {
+    if (activeProduct === "docta_legacy") {
+      console.log("ℹ️ Multimedia no disponible para producto Legacy");
+      return;
+    }
+
+    const id = serverResult?.id || serverResult?.event_id || null;
+    console.log("🔔 Multimedia activada. ID de evento vinculado:", id);
+
+    setActivePanicId(id);
     if (timerRef.current) clearTimeout(timerRef.current);
-    
-    // Auto-cierre en 5 minutos
+
     timerRef.current = setTimeout(() => {
-      setIsMultimediaEnabled(false);
+      setActivePanicId(null);
     }, 300000);
   };
 
   const deactivateMultimedia = () => {
     if (timerRef.current) clearTimeout(timerRef.current);
-    setIsMultimediaEnabled(false);
+    setActivePanicId(null);
   };
 
   useEffect(() => {
     const loadPanicAppData = async () => {
       try {
-        const storedData = await AsyncStorage.getItem("@licencias");
-        console.log("📦 AuthorizedNavigation: Verificando AsyncStorage...");
+        const specificKey = getStorageKey(activeProduct);
+        const storedData = await AsyncStorage.getItem(specificKey);
+        console.log(`📦 AuthorizedNavigation (${activeProduct}): Verificando AsyncStorage en ${specificKey}...`);
         if (storedData) {
           const parsedData = JSON.parse(storedData);
           console.log("📦 panicAppData encontrado:", parsedData.panicAppData ? "SÍ" : "NO");
@@ -374,7 +388,7 @@ function AuthorizedNavigation() {
       }
     };
     loadPanicAppData();
-  }, []);
+  }, [activeProduct]);
 
   return (
     <BottomTabs.Navigator
@@ -383,6 +397,7 @@ function AuthorizedNavigation() {
         headerTintColor: headerTxtColor,
         tabBarLabelStyle: { fontSize: 13, width: "100%", paddingBottom: 1 },
         headerTitleAlign: 'center',
+        tabBarHideOnKeyboard: true,
       }}
     >
       <BottomTabs.Screen
@@ -408,18 +423,22 @@ function AuthorizedNavigation() {
           },
         }}
       >
-        {(props) => <AllButtons {...props} onPanicSuccess={activateMultimedia} />}
+        {(props) => (
+          <AllButtons
+            {...props}
+            activeProduct={activeProduct}
+            onPanicSuccess={activateMultimedia}
+            onPanicCancel={deactivateMultimedia}
+            externalPanicId={activePanicId}
+          />
+        )}
       </BottomTabs.Screen>
 
-      {isMultimediaEnabled && (
+      {activeProduct !== "docta_legacy" && (
         <BottomTabs.Screen
           name="Multimedia"
           options={{
-            title: "",
-            tabBarLabel: "Adjuntar",
-            tabBarIcon: ({ color, size }) => (
-              <Ionicons name="camera" size={size} color={color} />
-            ),
+            tabBarButton: () => null,
             headerTitle: () => (
               <Image
                 source={{ uri: logoUrl }}
@@ -435,13 +454,18 @@ function AuthorizedNavigation() {
             },
           }}
         >
-          {(props) => <Multimedia {...props} onFinalize={deactivateMultimedia} />}
+          {(props) => (
+            <Multimedia
+              {...props}
+              panicId={activePanicId}
+              onFinalize={deactivateMultimedia}
+            />
+          )}
         </BottomTabs.Screen>
       )}
 
       <BottomTabs.Screen
         name="User"
-        component={User}
         options={{
           title: "",
           tabBarLabel: "Sistema",
@@ -462,13 +486,16 @@ function AuthorizedNavigation() {
             justifyContent: 'center',
           },
         }}
-      />
+      >
+        {(props) => <User {...props} activeProduct={activeProduct} />}
+      </BottomTabs.Screen>
     </BottomTabs.Navigator>
   );
 }
 
-function NoAuthorizedNavigation({ activeProduct, onAuthorized }) {
-  const initialRoute = activeProduct === "docta_panico" ? "Configuration" : "Welcome";
+function NoAuthorizedNavigation({ activeProduct, onAuthorized, activationData, initialOnboardingCode }) {
+  const isDocta = activeProduct === "docta_panico" || activeProduct === "docta_comunitarias";
+  const initialRoute = isDocta ? "Configuration" : "Welcome";
   
   return (
     <Stack.Navigator
@@ -501,7 +528,10 @@ function NoAuthorizedNavigation({ activeProduct, onAuthorized }) {
         {(props) => (
           <Configuration 
             {...props} 
-            onAuthorized={onAuthorized} 
+            activeProduct={activeProduct}
+            onAuthorized={onAuthorized}
+            initialData={activationData}
+            initialOnboardingCode={initialOnboardingCode}
           />
         )}
       </Stack.Screen>
@@ -893,6 +923,15 @@ function App() {
   const [isAuthorized, setIsAuthorized] = useState(false);
   const [hasMasterCode, setHasMasterCode] = useState(false);
   const [activeProduct, setActiveProduct] = useState(null);
+  const [activationData, setActivationData] = useState(null);
+  const [deepLinkCode, setDeepLinkCode] = useState(null);
+
+  const handleActivated = (product, extraData = null) => {
+    setActiveProduct(product);
+    setActivationData(extraData);
+    setHasMasterCode(true);
+  };
+
   const [expoPushToken, setExpoPushToken] = useState('');
   const [notification, setNotification] = useState(false);
   const [showEventModal, setShowEventModal] = useState(false);
@@ -987,6 +1026,11 @@ function App() {
   */
 
   useEffect(() => {
+    onUnauthorized(() => {
+      console.log("⚠️ App detectó 401: Redirigiendo a configuración...");
+      setIsAuthorized(false);
+    });
+
     async function prepare() {
       try {
         await SplashScreen.preventAutoHideAsync();
@@ -1024,26 +1068,23 @@ function App() {
           setHasMasterCode(true);
           setActiveProduct("vigilantes");
           setIsAuthorized(true);
-          return;
-        }
-
-        if (isVigiProduct(masterProduct)) {
+        } else if (isVigiProduct(masterProduct)) {
           console.log("🛡️ Vigilantes sin T&C → Welcome");
           setHasMasterCode(true);
           setActiveProduct("vigilantes");
           setIsAuthorized(false);
-          return;
-        }
-
-        let activeProd = null;
-
-        if (masterData !== null) {
+        } else if (masterData !== null) {
           const parsedMaster = JSON.parse(masterData);
-          activeProd = parsedMaster.product;
+          const activeProd = parsedMaster.product;
           setHasMasterCode(true);
           setActiveProduct(activeProd);
+          setActivationData({
+            initialStep: 2,
+            masterConfig: parsedMaster,
+            panicAppData: parsedMaster.panicAppData,
+            onboardingInfo: parsedMaster.onboardingInfo
+          });
 
-          // Verificamos la licencia específica de este producto
           const specificKey = getStorageKey(activeProd);
           const licenseData = await AsyncStorage.getItem(specificKey);
 
@@ -1058,12 +1099,39 @@ function App() {
           const legacyData = await AsyncStorage.getItem("@licencias");
           if (legacyData !== null) {
             setIsAuthorized(true);
-            setActiveProduct("docta_panico");
+            setActiveProduct("docta_legacy");
             await migrateExistingUsers(legacyData);
           } else {
             setHasMasterCode(false);
             setActiveProduct(null);
           }
+        }
+
+        try {
+          const initialUrl = await Linking.getInitialURL();
+          const codeFromLink = extractOnboardingCode(initialUrl);
+          if (codeFromLink) {
+            console.log("✅ Código extraído de App Link inicial:", codeFromLink);
+            setDeepLinkCode(codeFromLink);
+          } else if (Platform.OS === "android") {
+            const referrerChecked = await AsyncStorage.getItem("@install_referrer_checked");
+            if (!referrerChecked) {
+              try {
+                const referrer = await Application.getInstallReferrerAsync();
+                console.log("📦 Install Referrer de Play:", referrer);
+                const codeFromReferrer = extractOnboardingCode(referrer);
+                if (codeFromReferrer) {
+                  console.log("✅ Código extraído de Install Referrer:", codeFromReferrer);
+                  setDeepLinkCode(codeFromReferrer);
+                }
+              } catch (refError) {
+                console.warn("No se pudo leer Install Referrer:", refError?.message || refError);
+              }
+              await AsyncStorage.setItem("@install_referrer_checked", "1");
+            }
+          }
+        } catch (linkError) {
+          console.warn("Error leyendo App Link / Referrer:", linkError);
         }
       } catch (e) {
         console.warn("❌ Error durante la preparación:", e);
@@ -1075,6 +1143,29 @@ function App() {
     prepare();
   }, []);
 
+  useEffect(() => {
+    const handleDeepLink = (url) => {
+      if (!url) return;
+      console.log("🔗 Deep Link detectado:", url);
+      const code = extractOnboardingCode(url);
+      if (code) {
+        console.log("✅ Código extraído de Deep Link:", code);
+        setDeepLinkCode(code);
+      }
+    };
+
+    Linking.getInitialURL().then((url) => {
+      if (url) handleDeepLink(url);
+    });
+
+    const subscription = Linking.addEventListener("url", (event) => {
+      handleDeepLink(event.url);
+    });
+
+    return () => {
+      subscription.remove();
+    };
+  }, []);
 
   useEffect(() => {
     if (fontsLoaded && appIsReady) {
@@ -1100,12 +1191,8 @@ function App() {
                 {(props) => (
                   <MasterCode 
                     {...props} 
-                    onActivated={async (product) => {
-                      // Tras el código máster siempre pasa por Welcome (T&C).
-                      // La autorización (licencia) ocurre al tocar CONTINUAR allí.
-                      setHasMasterCode(true);
-                      setActiveProduct(product);
-                    }}
+                    onActivated={handleActivated}
+                    initialCode={deepLinkCode}
                   />
                 )}
               </Stack.Screen>
@@ -1119,6 +1206,8 @@ function App() {
                   <NoAuthorizedNavigation 
                     {...props} 
                     activeProduct={activeProduct}
+                    activationData={activationData}
+                    initialOnboardingCode={deepLinkCode}
                     onAuthorized={() => setIsAuthorized(true)}
                   />
                 )}
@@ -1126,12 +1215,13 @@ function App() {
             )
           ) : (
             // FLUJO DE APP ACTIVA
-            activeProduct === "docta_panico" ? (
+            isDoctaProduct(activeProduct) ? (
               <Stack.Screen
                 name="Principal"
-                component={AuthorizedNavigation}
                 options={{ headerShown: false }}
-              />
+              >
+                {(props) => <AuthorizedNavigation {...props} activeProduct={activeProduct} />}
+              </Stack.Screen>
             ) : (
               // Nueva navegación para otros productos (Vigilantes, Ciudadanos, etc.)
               <Stack.Screen 
