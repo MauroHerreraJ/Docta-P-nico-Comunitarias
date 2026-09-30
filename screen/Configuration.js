@@ -129,14 +129,12 @@ console.log("¿Es accepted?:", result?.licenseCreated?.status === "accepted");
         );
         console.log("Datos Guardados en AsyncStorage (incluyendo panicAppData)");
 
-        /* 🚫 NOTIFICACIONES ANULADAS TEMPORALMENTE
         try {
           await registerForPushNotificationsAsync(codigoExtraido);
         } catch (error) {
           console.error("Error al registrar notificaciones:", error);
           // No bloqueamos el flujo principal si falla el registro de notificaciones
         }
-        */
 
         navigation.replace("Principal");
       }
