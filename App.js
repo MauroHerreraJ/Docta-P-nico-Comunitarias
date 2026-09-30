@@ -192,6 +192,40 @@ function shouldUpdatePanicAppData(parsedData) {
   return false;
 }
 
+function confirmLeaveMultimedia(onLeave) {
+  Alert.alert(
+    "¿Abandonar Multimedia?",
+    "Si sale de esta pantalla, no podrá adjuntar más información a este reporte.",
+    [
+      { text: "Continuar Reportando", style: "cancel" },
+      {
+        text: "Salir",
+        style: "destructive",
+        onPress: onLeave,
+      },
+    ]
+  );
+}
+
+function multimediaTabGuard(onFinalize) {
+  return ({ navigation }) => ({
+    tabPress: (e) => {
+      const state = navigation.getState();
+      const currentRoute = state.routes[state.index];
+      if (currentRoute?.name !== "Multimedia") return;
+
+      const targetRoute = state.routes.find((route) => route.key === e.target);
+      if (!targetRoute || targetRoute.name === "Multimedia") return;
+
+      e.preventDefault();
+      confirmLeaveMultimedia(() => {
+        if (typeof onFinalize === "function") onFinalize();
+        navigation.navigate(targetRoute.name);
+      });
+    },
+  });
+}
+
 function AuthorizedNavigation({ activeProduct }) {
   const [logoUrl, setLogoUrl] = useState("https://i.imgur.com/aIYhRsN.png");
   const [headerBgColor, setHeaderBgColor] = useState("white");
@@ -266,6 +300,7 @@ function AuthorizedNavigation({ activeProduct }) {
 
   return (
     <BottomTabs.Navigator
+      screenListeners={multimediaTabGuard(deactivateMultimedia)}
       screenOptions={{
         headerStyle: { backgroundColor: headerBgColor, height: 120 },
         headerTintColor: headerTxtColor,
@@ -509,6 +544,7 @@ function ProductSpecificNavigation({ onReset }) {
 
   return (
     <BottomTabs.Navigator
+      screenListeners={multimediaTabGuard(deactivateMultimedia)}
       screenOptions={{
         headerStyle: { backgroundColor: 'white', height: 120 },
         headerTintColor: '#222266',

@@ -132,13 +132,19 @@ function Multimedia({ onFinalize, panicId }) {
           "Si sale de esta pantalla, no podrá adjuntar más información a este reporte.",
           [
             { text: "Continuar Reportando", style: "cancel", onPress: () => {} },
-            { 
-              text: "Salir", 
-              style: "destructive", 
+            {
+              text: "Salir",
+              style: "destructive",
               onPress: () => {
-                if (typeof onFinalize === 'function') onFinalize();
-                navigation.navigate("Desit");
-              } 
+                if (typeof onFinalize === "function") onFinalize();
+                if (navigation.canGoBack()) {
+                  navigation.goBack();
+                } else if (navigation.getState()?.routeNames?.includes("Desit")) {
+                  navigation.navigate("Desit");
+                } else {
+                  navigation.navigate("ProductHome");
+                }
+              },
             },
           ]
         );
