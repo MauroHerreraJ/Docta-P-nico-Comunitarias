@@ -49,9 +49,11 @@ function MasterCode({ onActivated, navigation, initialCode }) {
         const result = await lookupOnboardingCode(digitsOnly);
         
         if (result.canRegister) {
+          const municipality = result.municipality || {};
           const masterData = {
             product: "docta_comunitarias",
-            muniCode: digitsOnly,
+            muniCode: municipality.code || municipality.panicAppCode || municipality.shortCode || digitsOnly,
+            equipment: result.equipment || result.target_device_id || result.targetDeviceId || municipality.equipment || municipality.target_device_id || "",
             isDocta4: true,
             onboardingInfo: result,
             activatedAt: new Date().toISOString()

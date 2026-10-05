@@ -52,11 +52,33 @@ function User({ navigation, activeProduct }) {
     try {
       const specificKey = getStorageKey(activeProduct);
       const storedLicencia = await AsyncStorage.getItem(specificKey);
-      if (storedLicencia) {
-        const parsedData = JSON.parse(storedLicencia);
+      if (!storedLicencia) return;
 
-        setLicencia(parsedData.result.licenseCreated); // Accedemos a "licenseCreated"
+      const parsedData = JSON.parse(storedLicencia);
+      const created = parsedData.result?.licenseCreated;
+      if (!created) return;
+
+      // Flujo calle / desit-server: se muestra tal cual vino licenseCreated.
+      if (!parsedData.token?.isDocta4) {
+        setLicencia(created);
+        return;
       }
+
+      const municipalityName =
+        created.municipalityName ||
+        parsedData.panicAppData?.name ||
+        parsedData.panicAppData?.municipality?.name ||
+        "";
+
+      setLicencia({
+        ...created,
+        isDocta4: true,
+        accountNumber: created.accountNumber || created.account_number || "",
+        code: created.code || "",
+        municipalityName,
+        targetDeviceId: created.targetDeviceId || created.target_device_id || created.deviceId || "",
+        status: created.status || "accepted",
+      });
     } catch (error) {
       console.log("Error al cargar la licencia", error);
     }
@@ -66,7 +88,7 @@ function User({ navigation, activeProduct }) {
   useFocusEffect(
     useCallback(() => {
       loadLicencia();
-    }, [])
+    }, [activeProduct])
   );
 
   // Ejecuta la función cuando se monta el componente
@@ -257,8 +279,10 @@ function User({ navigation, activeProduct }) {
             <View style={styles.underline}></View>
           </View>
           <View style={styles.textContainer}>
-            <Text style={styles.text}>CodigoApp: </Text>
-            <Text style={styles.textData}>{licencia.panicAppCode}</Text>
+            <Text style={styles.text}>{licencia.isDocta4 ? "Municipalidad: " : "CodigoApp: "}</Text>
+            <Text style={styles.textData}>
+              {licencia.isDocta4 ? licencia.municipalityName : licencia.panicAppCode}
+            </Text>
             <View style={styles.underline}></View>
           </View>
           <View style={styles.textContainer}>

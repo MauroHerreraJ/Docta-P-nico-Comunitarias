@@ -90,8 +90,10 @@ const getEndpoints = async () => {
     return {
       onboardingLookup: `${baseUrl}/modulo/onboarding/lookup`,
       onboardingRegister: `${baseUrl}/modulo/onboarding/register`,
+      onboardingRecover: `${baseUrl}/modulo/onboarding/recover`,
       register: `${baseUrl}/modulo/dispositivos`,
       status: `${baseUrl}/modulo/dispositivos/yo`,
+      closeOthers: `${baseUrl}/modulo/dispositivos/cerrar-otros`,
       fcm: `${baseUrl}/modulo/dispositivos/fcm`,
       panic: `${baseUrl}/modulo/panico-comunitario`,
       location: `${baseUrl}/modulo/eventos/ubicacion`,
@@ -112,13 +114,112 @@ const getEndpoints = async () => {
   };
 };
 
+const extractDocta4AccessToken = (data) => {
+  if (!data || typeof data !== "object") return null;
+  if (typeof data.accessToken === "string" && data.accessToken) return data.accessToken;
+  if (typeof data.access_token === "string" && data.access_token) return data.access_token;
+  if (typeof data.token === "string" && data.token) return data.token;
+  if (typeof data.token?.accessToken === "string" && data.token.accessToken) return data.token.accessToken;
+  if (typeof data.token?.access_token === "string" && data.token.access_token) return data.token.access_token;
+  return null;
+};
+
+const pickNonEmpty = (...values) => {
+  for (const value of values) {
+    if (value == null) continue;
+    const text = String(value).trim();
+    if (text && text !== "auto" && text !== "undefined" && text !== "null") return text;
+  }
+  return "";
+};
+
+const padNumericId = (value, size = 4) => {
+  if (!value) return "";
+  if (/^\d+$/.test(value) && value.length <= size) return value.padStart(size, "0");
+  return value;
+};
+
+/**
+ * Arma el mismo shape de licenseCreated que usa Sistema / desit-server,
+ * a partir de la respuesta de register Docta 4. No se usa en el flujo legacy.
+ */
+export const buildDocta4LicenseCreated = ({
+  result = {},
+  onboardingInfo = {},
+  masterConfig = {},
+} = {}) => {
+  const license = result.license || result.licenseCreated || {};
+  const municipality = result.municipality || onboardingInfo.municipality || masterConfig.municipality || {};
+
+  const accountNumber = padNumericId(pickNonEmpty(
+    license.accountNumber,
+    license.account_number,
+    result.account_number,
+    result.accountNumber
+  ));
+
+  const code = pickNonEmpty(
+    license.code,
+    license.license_code,
+    result.license_code
+  );
+
+  const municipalityName = pickNonEmpty(
+    municipality.name,
+    municipality.nombre
+  );
+
+  const targetDeviceId = padNumericId(pickNonEmpty(
+    license.deviceId,
+    license.device_id,
+    result.deviceId,
+    result.target_device_id,
+    result.targetDeviceId,
+    result.nro_equipo,
+    result.equipment,
+    license.targetDeviceId,
+    license.target_device_id,
+    license.equipment
+  ));
+
+  return {
+    status: pickNonEmpty(license.status, result.status) || "accepted",
+    code,
+    accountNumber,
+    municipalityName,
+    targetDeviceId,
+  };
+};
+
+const persistDocta4Credential = async (data, { replaceLegacyLicense = false } = {}) => {
+  const accessToken = extractDocta4AccessToken(data);
+  if (!accessToken) {
+    console.warn("Docta 4 register no devolvió accessToken/token; se conserva la credencial previa.");
+    return null;
+  }
+
+  await AsyncStorage.setItem("@device_token", accessToken);
+  await AsyncStorage.setItem("@master_token", accessToken);
+
+  const deviceId = data.dispositivo_id ?? data.device_id ?? data.deviceId ?? data.id;
+  if (deviceId != null) {
+    await AsyncStorage.setItem("@device_id", String(deviceId));
+  }
+
+  if (replaceLegacyLicense) {
+    await AsyncStorage.removeItem("@licencias");
+  }
+
+  console.log("Docta 4: credencial reemplazada por el accessToken del register.");
+  return accessToken;
+};
+
 /**
  * Obtiene el token de autenticación según el servidor
  */
 const getAuthToken = async () => {
   const masterConfig = await AsyncStorage.getItem("@master_config");
   if (masterConfig) {
-    const parsed = JSON.parse(masterConfig);
     const deviceToken = await AsyncStorage.getItem("@device_token");
     if (deviceToken) return deviceToken;
   }
@@ -130,7 +231,7 @@ const getAuthToken = async () => {
     const data = await AsyncStorage.getItem(key);
     if (data) {
       const parsed = JSON.parse(data);
-      const token = parsed.token?.access_token || parsed.token?.accessToken || parsed.token?.accessToken;
+      const token = parsed.token?.access_token || parsed.token?.accessToken;
       if (token) return token;
     }
   }
@@ -161,35 +262,60 @@ export const lookupOnboardingCode = async (code) => {
 /**
  * Registrar y crear la licencia (Sección 1b.2)
  */
+const finishDocta4Onboarding = async (responseData) => {
+  const accessToken = await persistDocta4Credential(responseData, { replaceLegacyLicense: true });
+
+  const currentConfig = await AsyncStorage.getItem("@master_config");
+  const parsedConfig = currentConfig ? JSON.parse(currentConfig) : {};
+  await AsyncStorage.setItem("@master_config", JSON.stringify({
+    ...parsedConfig,
+    apiUrl: DOCTA4_BASE_URL,
+    product: "docta_comunitarias",
+    municipality: responseData?.municipality || parsedConfig.municipality
+  }));
+
+  return {
+    ...responseData,
+    token: accessToken || responseData?.token,
+    accessToken: accessToken || responseData?.accessToken,
+  };
+};
+
 export const registerOnboarding = async (onboardingData) => {
   try {
     const api = await getEndpoints();
     const response = await axios.post(api.onboardingRegister, onboardingData, {
       headers: { "Content-Type": "application/json" }
     });
-    
-    // Guardar el token de dispositivo y datos del municipio
-    if (response.data?.token) {
-      await AsyncStorage.setItem("@device_token", response.data.token);
-      await AsyncStorage.setItem("@device_id", String(response.data.dispositivo_id));
-      
-      const currentConfig = await AsyncStorage.getItem("@master_config");
-      const parsedConfig = currentConfig ? JSON.parse(currentConfig) : {};
-
-      await AsyncStorage.setItem("@master_token", response.data.token);
-      await AsyncStorage.setItem("@master_config", JSON.stringify({
-        ...parsedConfig,
-        apiUrl: DOCTA4_BASE_URL,
-        product: "docta_comunitarias",
-        municipality: response.data.municipality || parsedConfig.municipality
-      }));
-    }
-    
-    return response.data;
+    return await finishDocta4Onboarding(response.data);
   } catch (error) {
     console.error("Error en registro de onboarding:", error);
     throw error;
   }
+};
+
+/**
+ * Recupera una licencia existente en otro teléfono (cambio de celular).
+ * 404 = no hay coincidencia: la app debe hacer el alta normal.
+ */
+export const recoverOnboarding = async (recoverData) => {
+  const api = await getEndpoints();
+  const response = await axios.post(api.onboardingRecover, recoverData, {
+    headers: { "Content-Type": "application/json" }
+  });
+  return await finishDocta4Onboarding(response.data);
+};
+
+export const closeOtherDevices = async () => {
+  const api = await getEndpoints();
+  const token = await getAuthToken();
+  const response = await axios.post(api.closeOthers, {}, {
+    headers: {
+      Authorization: `Bearer ${token}`,
+      "Content-Type": "application/json",
+    },
+  });
+  return response.data;
 };
 
 /**
@@ -205,13 +331,12 @@ export const registerDevice = async (regData) => {
       },
     });
     
-    // Guardar el token de dispositivo retornado
-    if (response.data?.token) {
-      await AsyncStorage.setItem("@device_token", response.data.token);
-      await AsyncStorage.setItem("@device_id", String(response.data.dispositivo_id));
-    }
-    
-    return response.data;
+    const accessToken = await persistDocta4Credential(response.data);
+    return {
+      ...response.data,
+      token: accessToken || response.data?.token,
+      accessToken: accessToken || response.data?.accessToken,
+    };
   } catch (error) {
     console.error("Error registrando dispositivo en DOCTA 4:", error);
     throw error;
@@ -490,13 +615,12 @@ export const registerNotificationToken = async (licenseCode, fcmToken) => {
 
     if (isDocta4) {
       console.log("🚀 Registrando token FCM en DOCTA 4...");
-      const response = await axios.post(api.fcm, {
+      const response = await axios.patch(api.fcm, {
         fcm_token: fcmToken
       }, {
         headers: { 
           Authorization: `Bearer ${token}`,
           "Content-Type": "application/json",
-          "X-Docta-App-Key": X_DOCTA_APP_KEY
         }
       });
       return response.data;

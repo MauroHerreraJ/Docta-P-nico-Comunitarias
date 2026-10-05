@@ -14,17 +14,61 @@ import {
 import { useNavigation, useRoute } from "@react-navigation/native";
 import { StyleSheet } from "react-native";
 import { useState, useEffect } from "react";
-import { postUserData, postToken, getPanicAppByCode, validateCredentials, registerDevice, lookupOnboardingCode, registerOnboarding } from "../util/Api";
+import { postUserData, postToken, getPanicAppByCode, validateCredentials, registerDevice, lookupOnboardingCode, registerOnboarding, recoverOnboarding, closeOtherDevices, buildDocta4LicenseCreated } from "../util/Api";
 import { extractOnboardingCode } from "../util/onboardingCode";
 import { registerForPushNotificationsAsync } from "../util/Notifications";
 import { MaterialIcons, Ionicons } from "@expo/vector-icons";
 import { Dimensions } from "react-native";
 import * as Sentry from "@sentry/react-native";
 import * as Device from 'expo-device';
+import * as Location from "expo-location";
 import SaveButton from "../component/SaveButton";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import Constants from 'expo-constants';
+
+const pickRecoverProfile = (profile = {}) => {
+  const recover = {};
+  Object.entries(profile).forEach(([key, value]) => {
+    if (!value || !String(value).trim()) return;
+    const normalized = key.toLowerCase();
+    if (
+      normalized.includes("documento") ||
+      normalized.includes("dni") ||
+      normalized.includes("teléfono") ||
+      normalized.includes("telefono")
+    ) {
+      recover[key] = String(value).trim();
+    }
+  });
+  return recover;
+};
+
+const promptAtHome = () =>
+  new Promise((resolve) => {
+    Alert.alert(
+      "Ubicación de tu casa",
+      "¿Estás en tu casa ahora? Si decís que sí, el operador va a ver tu casa en el mapa cuando pidas ayuda.",
+      [
+        { text: "No", style: "cancel", onPress: () => resolve(false) },
+        { text: "Sí", onPress: () => resolve(true) },
+      ]
+    );
+  });
+
+const promptCloseOtherPhones = (count) =>
+  new Promise((resolve) => {
+    Alert.alert(
+      "¿Querés cerrar la sesión en tu otro celular?",
+      count > 1
+        ? `Hay ${count} teléfonos más con esta licencia.`
+        : "Hay otro teléfono con esta licencia.",
+      [
+        { text: "No", style: "cancel", onPress: () => resolve(false) },
+        { text: "Sí", onPress: () => resolve(true) },
+      ]
+    );
+  });
 
 const TERMS_AND_CONDITIONS = {
   title: "Términos y condiciones de uso",
@@ -264,37 +308,111 @@ function Configuration({ onAuthorized, activeProduct, initialData, initialOnboar
           console.warn("No se pudo obtener el token push antes del onboarding:", tokenError);
         }
 
-        const registerData = {
+        const deviceMeta = {
           onboardingToken: onboardingInfo.onboardingToken,
-          profile: userProfile,
           fcm_token: tokenPush, 
           plataforma: Platform.OS,
           app_version: Constants.expoConfig?.version || "3.3.0",
           modelo: `${Device.brand} ${Device.modelName}`
         };
 
-        console.log("Enviando registro de onboarding:", registerData);
-        const result = await registerOnboarding(registerData);
-        console.log("Registro exitoso:", result);
+        let result = null;
+        const recoverProfile = pickRecoverProfile(userProfile);
+        if (Object.keys(recoverProfile).length > 0) {
+          try {
+            console.log("Intentando recover de licencia Docta 4:", recoverProfile);
+            result = await recoverOnboarding({
+              ...deviceMeta,
+              profile: recoverProfile,
+            });
+            console.log("Licencia recuperada:", result);
+          } catch (recoverError) {
+            const recoverStatus = recoverError.response?.status;
+            if (recoverStatus === 404) {
+              console.log("No hay licencia previa en este equipo; se hace el alta nueva.");
+            } else {
+              throw recoverError;
+            }
+          }
+        }
 
-        // 🚀 GUARDAR EN ASYNC STORAGE PARA DOCTA 4
+        if (!result) {
+          setIsLoading(false);
+          const wantsHome = await promptAtHome();
+          let home_location = null;
+          if (wantsHome) {
+            try {
+              const { status } = await Location.requestForegroundPermissionsAsync();
+              if (status === "granted") {
+                const pos = await Location.getCurrentPositionAsync({
+                  accuracy: Location.Accuracy.Balanced,
+                });
+                home_location = { lat: pos.coords.latitude, lon: pos.coords.longitude };
+              }
+            } catch (locError) {
+              console.warn("No se pudo obtener home_location:", locError);
+            }
+          }
+          setIsLoading(true);
+
+          const registerData = {
+            ...deviceMeta,
+            profile: userProfile,
+            ...(home_location ? { home_location } : {}),
+          };
+          console.log("Enviando registro de onboarding:", registerData);
+          result = await registerOnboarding(registerData);
+          console.log("Registro exitoso:", result);
+        }
+
+        const accessToken = result.accessToken || result.access_token || result.token;
+        const licenseCreated = buildDocta4LicenseCreated({
+          result,
+          onboardingInfo,
+          masterConfig,
+        });
         const storageKey = getStorageKey(activeProduct);
         const storageData = {
           result: {
-            licenseCreated: {
-              status: "accepted",
-              code: result.token, 
-            }
+            licenseCreated,
           },
-          token: { 
-            access_token: result.token,
-            isDocta4: true 
+          token: {
+            access_token: accessToken,
+            accessToken,
+            isDocta4: true
           },
-          panicAppData: result.municipality || onboardingInfo.municipality
+          panicAppData: result.municipality || onboardingInfo.municipality,
+          profile: userProfile,
         };
-        
+
         await AsyncStorage.setItem(storageKey, JSON.stringify(storageData));
-        console.log(`✅ Datos Docta 4 guardados en ${storageKey} (incluyendo panicAppData)`);
+
+        const currentConfig = await AsyncStorage.getItem("@master_config");
+        const parsedConfig = currentConfig ? JSON.parse(currentConfig) : (masterConfig || {});
+        await AsyncStorage.setItem("@master_config", JSON.stringify({
+          ...parsedConfig,
+          isDocta4: true,
+          accountNumber: licenseCreated.accountNumber || parsedConfig.accountNumber,
+          municipalityName: licenseCreated.municipalityName || parsedConfig.municipalityName,
+          ...(licenseCreated.targetDeviceId
+            ? { equipment: licenseCreated.targetDeviceId }
+            : {}),
+        }));
+
+        console.log(`✅ Datos Docta 4 guardados en ${storageKey}:`, licenseCreated);
+
+        const otherPhones = Array.isArray(result.otros_telefonos) ? result.otros_telefonos : [];
+        if (otherPhones.length > 0) {
+          const shouldClose = await promptCloseOtherPhones(otherPhones.length);
+          if (shouldClose) {
+            try {
+              await closeOtherDevices();
+            } catch (closeError) {
+              console.error("No se pudieron cerrar los otros teléfonos:", closeError);
+              Alert.alert("Aviso", "La licencia se recuperó, pero no se pudo cerrar el otro celular.");
+            }
+          }
+        }
 
         if (onAuthorized) {
           onAuthorized();
