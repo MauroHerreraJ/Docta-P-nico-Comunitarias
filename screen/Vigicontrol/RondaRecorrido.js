@@ -8,6 +8,8 @@ import {
   Alert,
   ScrollView,
   Vibration,
+  Platform,
+  NativeModules,
 } from "react-native";
 import { WebView } from "react-native-webview";
 import { useFocusEffect, useRoute } from "@react-navigation/native";
@@ -22,6 +24,8 @@ import {
 import { CERCA_M, distanceMeters, formatMetros, RADIO_M } from "../../util/rondaGeo";
 import { enqueueRondaOp, flushRondaQueue, getRondaQueue } from "../../util/rondaQueue";
 import { buildRondaMapHtml } from "../../util/rondaMapHtml";
+import { codigoNfcDocta } from "../../util/codigoNfc";
+import { textoDeTagNfc } from "./LectorNfc";
 
 function apiMessage(error, fallback) {
   const msg = error?.response?.data?.message;
@@ -193,16 +197,23 @@ export default function RondaRecorrido() {
   const puntosConDist = useMemo(() => {
     const puntos = vista?.puntos || [];
     return puntos.map((punto, index) => {
+      const tieneGeo =
+        Number.isFinite(Number(punto.lat)) && Number.isFinite(Number(punto.lng));
+      const anterior = puntos[index - 1];
+      const anteriorGeo =
+        anterior &&
+        Number.isFinite(Number(anterior.lat)) &&
+        Number.isFinite(Number(anterior.lng));
       const dist =
-        pos && Number.isFinite(pos.lat)
+        pos && Number.isFinite(pos.lat) && tieneGeo
           ? distanceMeters(pos.lat, pos.lng, punto.lat, punto.lng)
           : null;
       const tramo =
-        index === 0
+        index === 0 || !tieneGeo || !anteriorGeo
           ? 0
           : distanceMeters(
-              puntos[index - 1].lat,
-              puntos[index - 1].lng,
+              anterior.lat,
+              anterior.lng,
               punto.lat,
               punto.lng,
             );
@@ -230,6 +241,114 @@ export default function RondaRecorrido() {
     !busy;
 
   const iniciada = vista?.estado === "en_curso" || vista?.estado === "cerrada" || vista?.estado === "cierre_pendiente";
+  const esNfc = vista?.tipo === "nfc";
+  const datosRef = useRef({});
+  datosRef.current = { vista, busy, pos, rondaId };
+
+  const marcarConCodigo = useCallback(async (codigo) => {
+    const actual = datosRef.current.vista;
+    const punto = (actual?.puntos || []).find(
+      (item) =>
+        String(item.nfcCodigo || "").trim().toLowerCase() === String(codigo).toLowerCase(),
+    );
+    if (!punto) {
+      setAviso("Este tag no está en la ronda");
+      return;
+    }
+    const ya = (actual?.marcas || []).some((marca) => marca.puntoId === String(punto._id));
+    if (ya) {
+      setAviso(`${punto.label || "Punto"} ya estaba marcado`);
+      return;
+    }
+    const id = datosRef.current.rondaId;
+    const lugar = datosRef.current.pos;
+    setBusy(true);
+    const body = {
+      kind: "marcar",
+      rondaId: id,
+      puntoId: punto._id,
+      lat: lugar?.lat,
+      lng: lugar?.lng,
+      accuracy: lugar?.accuracy,
+      at: new Date().toISOString(),
+      clientId: `n_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+      nfcCodigo: codigo,
+    };
+    try {
+      const res = await marcarPuntoRondaApp(body);
+      if (res?.ronda) setRonda(res.ronda);
+      Vibration.vibrate(220);
+      setAviso(`Marcado ${punto.label || `punto ${punto.orden}`}`);
+    } catch (error) {
+      if (!error?.response) {
+        await enqueueRondaOp(body);
+        setAviso("Marca guardada. Se envía cuando vuelva la red.");
+      } else {
+        setAviso(apiMessage(error, "No se pudo marcar el tag"));
+      }
+    } finally {
+      setBusy(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!esNfc || !iniciada || cerrada || !pack?.enCurso) return undefined;
+    if (Platform.OS !== "android" || !NativeModules.NfcManager) return undefined;
+    let vivo = true;
+    let ultimo = "";
+    let ultimoAt = 0;
+    let NfcManager;
+    let Ndef;
+    let NfcTech;
+    try {
+      const lib = require("react-native-nfc-manager");
+      NfcManager = lib.default;
+      Ndef = lib.Ndef;
+      NfcTech = lib.NfcTech;
+    } catch {
+      return undefined;
+    }
+    (async () => {
+      try {
+        const ok = await NfcManager.isSupported();
+        if (!ok || !vivo) return;
+        await NfcManager.start();
+        while (vivo) {
+          try {
+            await NfcManager.requestTechnology(NfcTech.Ndef, {
+              alertMessage: "Acercá el tag de la ronda",
+            });
+            const tag = await NfcManager.getTag();
+            const codigo = codigoNfcDocta(textoDeTagNfc(tag, Ndef));
+            const ahora = Date.now();
+            if (
+              codigo &&
+              (codigo !== ultimo || ahora - ultimoAt > 4000) &&
+              vivo
+            ) {
+              ultimo = codigo;
+              ultimoAt = ahora;
+              await marcarConCodigo(codigo);
+            }
+          } catch {
+            if (!vivo) break;
+          } finally {
+            try {
+              await NfcManager.cancelTechnologyRequest();
+            } catch {
+              /* ya cancelado */
+            }
+          }
+        }
+      } catch {
+        /* sin nfc */
+      }
+    })();
+    return () => {
+      vivo = false;
+      NfcManager.cancelTechnologyRequest().catch(() => {});
+    };
+  }, [esNfc, iniciada, cerrada, pack?.enCurso, marcarConCodigo]);
 
   const siguiente = useMemo(
     () => puntosConDist.find((punto) => !punto.marca) || null,
@@ -380,7 +499,15 @@ export default function RondaRecorrido() {
     );
   }
 
-  const botonMarca = !pack?.enCurso
+  const botonMarca = esNfc
+    ? !pack?.enCurso
+      ? "El turno no está en curso"
+      : !iniciada
+        ? "Iniciá la ronda y acercá el tag"
+        : cerrada
+          ? "Ronda completa"
+          : "Acercá el tag NFC del puesto"
+    : !pack?.enCurso
     ? "El turno no está en curso"
     : gpsError
       ? gpsError
@@ -407,12 +534,14 @@ export default function RondaRecorrido() {
         </Text>
       </View>
 
-      <RecorridoMap
-        puntos={vista.puntos}
-        marcas={vista.marcas}
-        pos={pos}
-        mostrarVos={Boolean(candidato ? candidato.dist <= CERCA_M : puntosConDist.some((p) => p.dist != null && p.dist <= CERCA_M))}
-      />
+      {esNfc ? null : (
+        <RecorridoMap
+          puntos={vista.puntos}
+          marcas={vista.marcas}
+          pos={pos}
+          mostrarVos={Boolean(candidato ? candidato.dist <= CERCA_M : puntosConDist.some((p) => p.dist != null && p.dist <= CERCA_M))}
+        />
+      )}
 
       <ScrollView style={styles.lista} contentContainerStyle={{ paddingBottom: 8 }}>
         {puntosConDist.map((punto) => (
@@ -443,6 +572,8 @@ export default function RondaRecorrido() {
                       }`
                     : punto.dist != null && punto.dist <= CERCA_M
                       ? `Inicio · a ${formatMetros(punto.dist)} de vos`
+                      : vista?.tipo === "nfc"
+                      ? "Pendiente de tag"
                       : "Inicio del recorrido"}
               </Text>
             </View>
@@ -482,6 +613,12 @@ export default function RondaRecorrido() {
             {busy ? "Guardando..." : pack?.enCurso ? "Iniciar ronda" : "El turno no está en curso"}
           </Text>
         </TouchableOpacity>
+      ) : esNfc ? (
+        <View style={[styles.btn, busy && styles.btnOff]}>
+          <Text style={styles.btnTexto}>
+            {busy ? "Guardando..." : botonMarca}
+          </Text>
+        </View>
       ) : (
         <TouchableOpacity
           style={[styles.btn, !puedeMarcar && styles.btnOff]}

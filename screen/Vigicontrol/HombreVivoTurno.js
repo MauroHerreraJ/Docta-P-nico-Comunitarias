@@ -6,15 +6,21 @@ import {
   ActivityIndicator,
   Alert,
   ScrollView,
+  Switch,
 } from "react-native";
 import { useFocusEffect } from "@react-navigation/native";
 import { Ionicons } from "@expo/vector-icons";
 import { getMiHombreVivoApp } from "../../util/NuevaApi";
+import {
+  alarmaHombreVivoApagada,
+  setAlarmaHombreVivo,
+} from "./HombreVivoAlerta";
 import { formatHoraBA } from "../../util/horaBA";
 
 export default function HombreVivoTurno() {
   const [loading, setLoading] = useState(true);
   const [data, setData] = useState(null);
+  const [alarma, setAlarma] = useState(true);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -31,8 +37,14 @@ export default function HombreVivoTurno() {
   useFocusEffect(
     useCallback(() => {
       load();
+      alarmaHombreVivoApagada().then((apagada) => setAlarma(!apagada));
     }, [load]),
   );
+
+  const onAlarma = async (valor) => {
+    setAlarma(valor);
+    await setAlarmaHombreVivo(valor);
+  };
 
   if (loading && !data) {
     return (
@@ -60,6 +72,17 @@ export default function HombreVivoTurno() {
         Cuando toca, el teléfono vibra y suena. Aceptás y se manda tu
         ubicación contra la geocerca de este objetivo.
       </Text>
+      <View style={styles.alarmaFila}>
+        <View style={{ flex: 1 }}>
+          <Text style={styles.alarmaTitulo}>Alarma</Text>
+          <Text style={styles.alarmaSub}>
+            {alarma
+              ? "Con la pantalla apagada abre Acá estoy."
+              : "Apagada. No suena ni abre la pantalla."}
+          </Text>
+        </View>
+        <Switch value={alarma} onValueChange={onAlarma} />
+      </View>
 
       <Text style={styles.listaTitulo}>Aceptados</Text>
       <ScrollView style={styles.lista} contentContainerStyle={{ paddingBottom: 12 }}>
@@ -101,6 +124,18 @@ const styles = StyleSheet.create({
   titulo: { fontSize: 18, fontWeight: "800", color: "#1A2332" },
   sub: { marginTop: 2, fontSize: 12, color: "#6B7280" },
   ayuda: { marginTop: 8, fontSize: 13, lineHeight: 18, color: "#475569" },
+  alarmaFila: {
+    marginTop: 12,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+    backgroundColor: "#fff",
+    borderRadius: 12,
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+  },
+  alarmaTitulo: { fontSize: 15, fontWeight: "800", color: "#1A2332" },
+  alarmaSub: { marginTop: 2, fontSize: 12, color: "#64748B" },
   filaSub: { fontSize: 12, color: "#64748B", fontWeight: "600" },
   boton: {
     marginTop: 16,

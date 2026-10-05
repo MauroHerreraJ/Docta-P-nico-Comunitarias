@@ -33,17 +33,18 @@ import RondaRecorrido from "./screen/Vigicontrol/RondaRecorrido";
 import NovedadesTurno from "./screen/Vigicontrol/NovedadesTurno";
 import HombreVivoTurno from "./screen/Vigicontrol/HombreVivoTurno";
 import AccesosTurno from "./screen/Vigicontrol/AccesosTurno";
-import HombreVivoAlerta from "./screen/Vigicontrol/HombreVivoAlerta";
+import HombreVivoAlerta, { detenerHombreVivo } from "./screen/Vigicontrol/HombreVivoAlerta";
 import { getPanicAppByCode, registerNotificationToken } from "./util/Api";
 import {
   getDeviceIdentity,
   sendDeviceIdentity,
   getStoredSession,
   clearSession,
+  onAppSessionExpired,
 } from "./util/NuevaApi";
 import { startGeoTracking, stopGeoTracking } from "./util/GeoTracker";
 import { clearEnrollment } from "./util/BiometricAuth";
-import { registerForPushNotificationsAsync } from "./util/Notifications";
+import { pedirPermisoNotificaciones } from "./util/Notifications";
 import * as Notifications from 'expo-notifications';
 import * as Updates from 'expo-updates';
 
@@ -595,10 +596,12 @@ function ProductSpecificNavigation({ onReset, activeProduct }) {
   useEffect(() => {
     if (!sessionReady) return undefined;
     if (session?.token) {
+      pedirPermisoNotificaciones().catch(() => {});
       startGeoTracking().catch((err) =>
         console.warn("[geo] start:", err?.message || err),
       );
     } else {
+      detenerHombreVivo().catch(() => {});
       stopGeoTracking().catch(() => {});
     }
     return undefined;
@@ -630,7 +633,16 @@ function ProductSpecificNavigation({ onReset, activeProduct }) {
     }
   };
 
+  useEffect(() => {
+    return onAppSessionExpired(() => {
+      detenerHombreVivo().catch(() => {});
+      stopGeoTracking().catch(() => {});
+      setSession(null);
+    });
+  }, []);
+
   const logoutSession = async () => {
+    await detenerHombreVivo();
     await stopGeoTracking();
     await clearSession();
     setSession(null);

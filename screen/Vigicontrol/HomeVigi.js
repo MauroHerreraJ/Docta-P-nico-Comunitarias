@@ -8,6 +8,7 @@ import {
   Alert,
   useWindowDimensions,
   ActivityIndicator,
+  BackHandler,
 } from "react-native";
 import { useFocusEffect, useNavigation } from "@react-navigation/native";
 import { Ionicons } from "@expo/vector-icons";
@@ -338,6 +339,19 @@ function HomeVigi({
   const [accesosCount, setAccesosCount] = useState(0);
   const [geoMin, setGeoMin] = useState(15);
 
+  useFocusEffect(
+    useCallback(() => {
+      const sub = BackHandler.addEventListener("hardwareBackPress", () => {
+        Alert.alert(
+          "Seguimiento activo",
+          "Salir de la pantalla no corta el servicio: el celular sigue en el mapa. Para dejar de informar, cerrá sesión.",
+        );
+        return true;
+      });
+      return () => sub.remove();
+    }, []),
+  );
+
   const escala = Math.max(0.8, Math.min(1.15, height / 780));
   const m = useMemo(() => (valor) => Math.round(valor * escala), [escala]);
   const s = useMemo(
@@ -606,10 +620,10 @@ function crearEstilos({ escala, horizontal }) {
     },
     screen: {
       flex: 1,
-      paddingHorizontal: m(18),
-      paddingTop: m(12),
-      paddingBottom: m(14),
-      justifyContent: "flex-start",
+      minHeight: 0,
+      paddingHorizontal: m(14),
+      paddingTop: m(6),
+      paddingBottom: m(8),
     },
     bloqueSuperior: {
       gap: m(10),
@@ -877,30 +891,35 @@ function crearEstilos({ escala, horizontal }) {
       fontSize: m(13),
       fontFamily: "open-sans-bold",
       color: "#222266",
-      marginTop: m(14),
-      marginBottom: m(10),
+      marginTop: m(8),
+      marginBottom: m(6),
     },
     grilla: {
-      gap: m(12),
-      marginBottom: m(14),
+      flex: 1,
+      minHeight: 0,
+      gap: m(8),
+      marginBottom: m(8),
     },
     fila: {
+      flex: 1,
+      minHeight: 0,
       flexDirection: "row",
-      gap: m(12),
+      gap: m(8),
     },
     filaFija: {
+      flex: 1,
+      minHeight: 0,
       flexDirection: "row",
-      gap: m(12),
+      gap: m(8),
     },
     modulo: {
       flex: 1,
+      minHeight: 0,
       backgroundColor: "white",
       borderRadius: m(14),
       paddingHorizontal: m(12),
-      paddingTop: m(12),
-      paddingBottom: m(12),
-      minHeight: m(96),
-      maxHeight: m(108),
+      paddingTop: m(8),
+      paddingBottom: m(8),
       justifyContent: "space-between",
       elevation: 2,
       shadowColor: "#000",
@@ -976,7 +995,7 @@ function crearEstilos({ escala, horizontal }) {
       backgroundColor: "#E74C3C",
       borderRadius: m(12),
       paddingVertical: m(12),
-      marginTop: "auto",
+      marginTop: 0,
       elevation: 3,
       shadowColor: "#000",
       shadowOffset: { width: 0, height: 2 },

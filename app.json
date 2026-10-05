@@ -68,6 +68,13 @@
       "expo-task-manager",
       "expo-audio",
       [
+        "expo-image-picker",
+        {
+          "cameraPermission": "Vigicontrol usa la cámara para adjuntar una foto a la novedad.",
+          "photosPermission": "Vigicontrol usa tus fotos para adjuntarlas a una novedad."
+        }
+      ],
+      [
         "expo-speech-recognition",
         {
           "microphonePermission": "Vigicontrol usa el micrófono para dictar una novedad del turno.",
@@ -107,7 +114,11 @@
         "FOREGROUND_SERVICE",
         "FOREGROUND_SERVICE_LOCATION",
         "POST_NOTIFICATIONS",
-        "RECORD_AUDIO"
+        "RECORD_AUDIO",
+        "CAMERA",
+        "NFC",
+        "WAKE_LOCK",
+        "REQUEST_IGNORE_BATTERY_OPTIMIZATIONS"
       ],
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",

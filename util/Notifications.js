@@ -8,18 +8,35 @@ import { registerNotificationToken } from './Api';
 Notifications.setNotificationHandler({
   handleNotification: async () => ({
     shouldShowAlert: true,
+    shouldShowBanner: true,
+    shouldShowList: true,
     shouldPlaySound: true,
     shouldSetBadge: false,
+    priority: Notifications.AndroidNotificationPriority.MAX,
   }),
 });
 
+/** Permiso del sistema para las alarmas locales de Vigicontrol. No usa @licencias. */
+export async function pedirPermisoNotificaciones() {
+  if (Platform.OS === "android") {
+    await Notifications.setNotificationChannelAsync("default", {
+      name: "Avisos",
+      importance: Notifications.AndroidImportance.MAX,
+      vibrationPattern: [0, 250, 250, 250],
+      lightColor: "#FF231F7C",
+    }).catch(() => {});
+  }
+  const actual = await Notifications.getPermissionsAsync();
+  if (actual.status === "granted") return true;
+  const pedido = await Notifications.requestPermissionsAsync();
+  return pedido.status === "granted";
+}
+
 /**
- * Solicita permisos y registra el token de notificaciones en el servidor
- * @param {string} licenseCode - El código de licencia del usuario
+ * Push remoto del producto de licencias. Sigue apagado: ese token se mandaba
+ * con @licencias, y Vigicontrol entra con @vigicontrol_session.
  */
-export async function registerForPushNotificationsAsync(licenseCode) {
-  // 🚫 NOTIFICACIONES ANULADAS TEMPORALMENTE
-  console.log("Notificaciones anuladas internamente.");
+export async function registerForPushNotificationsAsync() {
   return null;
 
   let token;

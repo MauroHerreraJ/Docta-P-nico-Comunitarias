@@ -10,9 +10,16 @@ import {
   ScrollView,
   KeyboardAvoidingView,
   Platform,
+  Image,
 } from "react-native";
 import { useFocusEffect } from "@react-navigation/native";
 import { Ionicons } from "@expo/vector-icons";
+import * as ImagePicker from "expo-image-picker";
+import {
+  requestRecordingPermissionsAsync,
+  useAudioRecorder,
+  useAudioRecorderState,
+} from "expo-audio";
 import { crearNovedadApp, getMisNovedadesApp } from "../../util/NuevaApi";
 import { formatHoraBA } from "../../util/horaBA";
 
@@ -45,7 +52,18 @@ export default function NovedadesTurno() {
   const [texto, setTexto] = useState("");
   const [sending, setSending] = useState(false);
   const [escuchando, setEscuchando] = useState(false);
+  const [fotos, setFotos] = useState([]);
+  const [audioUri, setAudioUri] = useState("");
   const baseRef = useRef("");
+  const grabacionInicio = useRef(0);
+  const grabacionTimer = useRef(null);
+  const audioRecorder = useAudioRecorder({
+    extension: ".m4a",
+    sampleRate: 44100,
+    numberOfChannels: 1,
+    bitRate: 64000,
+  });
+  const { isRecording } = useAudioRecorderState(audioRecorder);
 
   const onDictadoStart = useCallback(() => setEscuchando(true), []);
   const onDictadoEnd = useCallback(() => setEscuchando(false), []);
@@ -125,6 +143,10 @@ export default function NovedadesTurno() {
     const nota = String(texto || "").trim();
     if (!nota || sending) return;
     if (escuchando) speechApi?.ExpoSpeechRecognitionModule?.stop?.();
+    if (isRecording) {
+      Alert.alert("Audio", "Detené la grabación antes de enviar.");
+      return;
+    }
     if (!data?.enCurso) {
       Alert.alert("Turno", "El turno no está en curso.");
       return;
@@ -135,6 +157,8 @@ export default function NovedadesTurno() {
         texto: nota,
         at: new Date().toISOString(),
         clientId: `n_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+        fotos,
+        audio: audioUri ? { uri: audioUri } : null,
       });
       const creada = res?.novedad;
       if (creada) {
@@ -144,10 +168,76 @@ export default function NovedadesTurno() {
         }));
       }
       setTexto("");
+      setFotos([]);
+      setAudioUri("");
     } catch (error) {
       Alert.alert("No se guardó", apiMessage(error, "Probá de nuevo."));
     } finally {
       setSending(false);
+    }
+  };
+
+  const onFoto = async () => {
+    if (!puedeEscribir || sending || fotos.length >= 3) return;
+    const permiso = await ImagePicker.requestCameraPermissionsAsync();
+    if (!permiso.granted) {
+      Alert.alert("Cámara", "Hace falta la cámara para adjuntar una foto.");
+      return;
+    }
+    const result = await ImagePicker.launchCameraAsync({
+      quality: 0.5,
+      allowsEditing: false,
+    });
+    if (result.canceled) return;
+    const asset = result.assets?.[0];
+    if (!asset?.uri) return;
+    setFotos((prev) =>
+      [...prev, { uri: asset.uri, type: "image/jpeg", name: "foto.jpg" }].slice(0, 3),
+    );
+  };
+
+  const cortarGrabacion = async () => {
+    if (grabacionTimer.current) {
+      clearTimeout(grabacionTimer.current);
+      grabacionTimer.current = null;
+    }
+    const transcurrido = Date.now() - (grabacionInicio.current || 0);
+    if (transcurrido < 1000) {
+      await new Promise((resolve) => setTimeout(resolve, 1000 - transcurrido));
+    }
+    await audioRecorder.stop();
+    setAudioUri(audioRecorder.uri || "");
+    grabacionInicio.current = 0;
+  };
+
+  const onGrabar = async () => {
+    if (!puedeEscribir || sending || escuchando) return;
+    if (isRecording) {
+      try {
+        await cortarGrabacion();
+      } catch {
+        Alert.alert("Audio", "No se pudo guardar la grabación.");
+      }
+      return;
+    }
+    if (audioUri) {
+      setAudioUri("");
+      return;
+    }
+    const permiso = await requestRecordingPermissionsAsync();
+    if (!permiso.granted) {
+      Alert.alert("Micrófono", "Hace falta el micrófono para grabar el audio.");
+      return;
+    }
+    try {
+      grabacionInicio.current = Date.now();
+      await audioRecorder.prepareToRecordAsync();
+      audioRecorder.record();
+      grabacionTimer.current = setTimeout(() => {
+        cortarGrabacion().catch(() => {});
+      }, 60000);
+    } catch {
+      Alert.alert("Audio", "No se pudo empezar a grabar.");
     }
   };
 
@@ -202,11 +292,51 @@ export default function NovedadesTurno() {
             <View key={item._id} style={styles.nota}>
               <Text style={styles.hora}>{formatHoraBA(item.at)}</Text>
               <Text style={styles.cuerpo}>{item.texto}</Text>
+              {(item.adjuntos || []).some((adj) => adj.tipo === "foto") ? (
+                <View style={styles.fotos}>
+                  {(item.adjuntos || [])
+                    .filter((adj) => adj.tipo === "foto" && adj.url)
+                    .map((adj) => (
+                      <Image key={adj.url} source={{ uri: adj.url }} style={styles.foto} />
+                    ))}
+                </View>
+              ) : null}
+              {(item.adjuntos || []).some((adj) => adj.tipo === "audio") ? (
+                <Text style={styles.audioNota}>Audio</Text>
+              ) : null}
             </View>
           ))
         )}
       </ScrollView>
 
+      <View style={styles.adjuntosBar}>
+        <TouchableOpacity
+          style={[styles.chip, (!puedeEscribir || sending || fotos.length >= 3) && styles.btnOff]}
+          onPress={onFoto}
+          disabled={!puedeEscribir || sending || fotos.length >= 3}
+        >
+          <Ionicons name="camera" size={16} color="#fff" />
+          <Text style={styles.chipTexto}>Foto {fotos.length ? fotos.length : ""}</Text>
+        </TouchableOpacity>
+        <TouchableOpacity
+          style={[styles.chip, isRecording && styles.micOn, (!puedeEscribir || sending) && styles.btnOff]}
+          onPress={onGrabar}
+          disabled={!puedeEscribir || sending || escuchando}
+        >
+          <Ionicons name={isRecording ? "stop" : audioUri ? "trash" : "mic-circle"} size={16} color="#fff" />
+          <Text style={styles.chipTexto}>
+            {isRecording ? "Detener" : audioUri ? "Quitar audio" : "Grabar"}
+          </Text>
+        </TouchableOpacity>
+      </View>
+      {fotos.length || audioUri ? (
+        <View style={styles.previas}>
+          {fotos.map((foto) => (
+            <Image key={foto.uri} source={{ uri: foto.uri }} style={styles.foto} />
+          ))}
+          {audioUri ? <Text style={styles.audioNota}>Audio listo</Text> : null}
+        </View>
+      ) : null}
       <View style={styles.composer}>
         <TextInput
           style={styles.input}
@@ -231,7 +361,7 @@ export default function NovedadesTurno() {
             (!puedeEscribir || sending) && styles.btnOff,
           ]}
           onPress={onDictar}
-          disabled={!puedeEscribir || sending}
+          disabled={!puedeEscribir || sending || isRecording}
           accessibilityLabel={escuchando ? "Detener dictado" : "Dictar novedad"}
         >
           <Ionicons name={escuchando ? "stop" : "mic"} size={20} color="#fff" />
@@ -277,6 +407,21 @@ const styles = StyleSheet.create({
   },
   hora: { fontSize: 12, fontWeight: "800", color: "#8E44AD" },
   cuerpo: { marginTop: 4, fontSize: 14, lineHeight: 20, color: "#1A2332" },
+  fotos: { flexDirection: "row", flexWrap: "wrap", gap: 6, marginTop: 8 },
+  foto: { width: 64, height: 64, borderRadius: 8, backgroundColor: "#E8ECF1" },
+  audioNota: { marginTop: 6, fontSize: 12, fontWeight: "700", color: "#8E44AD" },
+  adjuntosBar: { flexDirection: "row", gap: 8, marginTop: 8 },
+  chip: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    backgroundColor: "#8E44AD",
+    borderRadius: 12,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+  },
+  chipTexto: { color: "#fff", fontWeight: "700", fontSize: 12 },
+  previas: { flexDirection: "row", alignItems: "center", gap: 8, marginTop: 8 },
   empty: {
     alignItems: "center",
     justifyContent: "center",

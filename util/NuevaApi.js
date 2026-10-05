@@ -1,6 +1,7 @@
 import axios from "axios";
 import { Platform } from "react-native";
 import AsyncStorage from "@react-native-async-storage/async-storage";
+import * as Notifications from "expo-notifications";
 import * as Application from "expo-application";
 import * as Device from "expo-device";
 
@@ -27,6 +28,7 @@ const BASE_URL = resolveBaseUrl();
 console.log("[NuevaApi] BASE_URL =", BASE_URL, "isDevice =", Device.isDevice);
 
 const STORAGE_INSTALL_ID = "@vigicontrol_install_id";
+const STORAGE_DEVICE_SECRET = "@vigicontrol_device_secret";
 /** ID fijo para emulador/simulador (fácil de vincular en el dashboard). */
 const SIMULATOR_DEVICE_ID = "simulador";
 
@@ -120,6 +122,33 @@ export async function healthCheck() {
   return data;
 }
 
+async function readDeviceSecret(deviceId) {
+  const raw = await AsyncStorage.getItem(STORAGE_DEVICE_SECRET);
+  if (!raw) return "";
+  try {
+    const parsed = JSON.parse(raw);
+    if (String(parsed?.deviceId || "") !== String(deviceId || "")) return "";
+    return String(parsed?.secret || "");
+  } catch {
+    return "";
+  }
+}
+
+export async function saveDeviceSecret(deviceId, secret) {
+  const id = String(deviceId || "").trim();
+  const value = String(secret || "").trim();
+  if (!id || !value) return;
+  await AsyncStorage.setItem(
+    STORAGE_DEVICE_SECRET,
+    JSON.stringify({ deviceId: id, secret: value }),
+  );
+}
+
+async function deviceSecretHeaders(deviceId) {
+  const secret = await readDeviceSecret(deviceId);
+  return secret ? { "X-Device-Secret": secret } : {};
+}
+
 /** Registra / actualiza el dispositivo en el servidor. */
 export async function registerDevice(extra = {}) {
   const identity = await getDeviceIdentity();
@@ -129,13 +158,20 @@ export async function registerDevice(extra = {}) {
     registeredAt: new Date().toISOString(),
   };
 
-  const { data } = await api.post("/api/dispositivos", payload);
+  const { data } = await api.post("/api/dispositivos", payload, {
+    headers: await deviceSecretHeaders(identity.deviceId),
+  });
+  if (data?.deviceSecret) {
+    await saveDeviceSecret(identity.deviceId, data.deviceSecret);
+    delete data.deviceSecret;
+  }
   return data;
 }
 
 export async function getDeviceById(deviceId) {
   const { data } = await api.get(
     `/api/dispositivos/device/${encodeURIComponent(deviceId)}`,
+    { headers: await deviceSecretHeaders(deviceId) },
   );
   return data;
 }
@@ -144,6 +180,7 @@ export async function updateDevice(deviceId, body = {}) {
   const { data } = await api.patch(
     `/api/dispositivos/device/${encodeURIComponent(deviceId)}`,
     body,
+    { headers: await deviceSecretHeaders(deviceId) },
   );
   return data;
 }
@@ -242,6 +279,38 @@ export async function saveSession(session) {
   return session;
 }
 
+const sesionVencidaListeners = new Set();
+let avisandoSesionVencida = false;
+
+export function onAppSessionExpired(fn) {
+  sesionVencidaListeners.add(fn);
+  return () => sesionVencidaListeners.delete(fn);
+}
+
+function respuestaCortaSesion(error) {
+  const status = error?.response?.status;
+  const raw = error?.response?.data?.message;
+  const text = Array.isArray(raw) ? raw.join(" ") : String(raw || "");
+  if (status === 401 && /no autorizado|autorizacion denegada/i.test(text)) return true;
+  if (status === 403 && /token not valid/i.test(text)) return true;
+  return false;
+}
+
+export async function cortarAvisosSinSesion() {
+  const pendientes = await Notifications.getAllScheduledNotificationsAsync().catch(() => []);
+  await Promise.all(
+    pendientes
+      .filter((item) => String(item.identifier || "").startsWith("hvAlarm_"))
+      .map((item) => Notifications.cancelScheduledNotificationAsync(item.identifier).catch(() => {})),
+  );
+  const visibles = await Notifications.getPresentedNotificationsAsync().catch(() => []);
+  await Promise.all(
+    visibles
+      .filter((item) => String(item.request?.identifier || "").startsWith("hvAlarm_"))
+      .map((item) => Notifications.dismissNotificationAsync(item.request.identifier).catch(() => {})),
+  );
+}
+
 export async function clearSession() {
   try {
     await api.post(
@@ -258,6 +327,7 @@ export async function clearSession() {
     // igual limpiamos local
   }
   await AsyncStorage.removeItem(STORAGE_SESSION);
+  await cortarAvisosSinSesion();
 }
 
 /**
@@ -309,6 +379,10 @@ export async function loginWithUser({ username, password, registerDeviceOnLogin 
     },
   );
 
+  if (data?.deviceSecret) {
+    await saveDeviceSecret(identity.deviceId, data.deviceSecret);
+  }
+
   const token = data?.token;
   if (!token) {
     throw new Error(
@@ -359,10 +433,11 @@ export async function marcarHombreVivoApp({
   lat,
   lng,
   accuracy,
+  omitio,
 } = {}) {
   const { data } = await api.post(
     "/api/hombre-vivo/mias",
-    { at, clientId, programaId, lat, lng, accuracy },
+    { at, clientId, programaId, lat, lng, accuracy, omitio: omitio === true },
     { headers: APP_HEADERS },
   );
   return data;
@@ -402,12 +477,56 @@ export async function crearAccesoApp({
   return data;
 }
 
-export async function crearNovedadApp({ texto, at, clientId } = {}) {
-  const { data } = await api.post(
-    "/api/novedades/mias",
-    { texto, at, clientId },
-    { headers: APP_HEADERS },
-  );
+export async function crearNovedadApp({
+  texto,
+  at,
+  clientId,
+  fotos = [],
+  audio,
+} = {}) {
+  const fotosOk = fotos.filter((foto) => foto?.uri).slice(0, 3);
+  const hayArchivos = fotosOk.length > 0 || Boolean(audio?.uri);
+  if (!hayArchivos) {
+    const { data } = await api.post(
+      "/api/novedades/mias",
+      { texto, at, clientId },
+      { headers: APP_HEADERS },
+    );
+    return data;
+  }
+
+  const form = new FormData();
+  form.append("texto", String(texto || ""));
+  if (at) form.append("at", at);
+  if (clientId) form.append("clientId", clientId);
+  fotosOk.forEach((foto, index) => {
+    form.append("fotos", {
+      uri: foto.uri,
+      name: foto.name || `foto-${index}.jpg`,
+      type: foto.type || "image/jpeg",
+    });
+  });
+  if (audio?.uri) {
+    form.append("audio", {
+      uri: audio.uri,
+      name: audio.name || "novedad.m4a",
+      type: audio.type || "audio/mp4",
+    });
+  }
+  const { data } = await api.post("/api/novedades/mias", form, {
+    headers: { ...APP_HEADERS },
+    transformRequest: (body, headers) => {
+      if (headers?.delete) {
+        headers.delete("Content-Type");
+        headers.delete("content-type");
+      } else if (headers) {
+        delete headers["Content-Type"];
+        delete headers["content-type"];
+      }
+      return body;
+    },
+    timeout: 60000,
+  });
   return data;
 }
 
@@ -437,10 +556,11 @@ export async function marcarPuntoRondaApp({
   accuracy,
   at,
   clientId,
+  nfcCodigo,
 } = {}) {
   const { data } = await api.post(
     `/api/rondas/mias/${encodeURIComponent(rondaId)}/marcar`,
-    { puntoId, lat, lng, accuracy, at, clientId },
+    { puntoId, lat, lng, accuracy, at, clientId, nfcCodigo },
     { headers: APP_HEADERS },
   );
   return data;
@@ -490,11 +610,51 @@ export async function pingGeo(body = {}) {
   return data;
 }
 
+api.interceptors.response.use(
+  (response) => response,
+  async (error) => {
+    const url = String(error?.config?.url || "");
+    if (
+      !url.includes("/api/logout") &&
+      respuestaCortaSesion(error) &&
+      !avisandoSesionVencida
+    ) {
+      avisandoSesionVencida = true;
+      try {
+        await AsyncStorage.removeItem(STORAGE_SESSION);
+        await cortarAvisosSinSesion();
+        for (const fn of sesionVencidaListeners) {
+          try {
+            fn();
+          } catch {
+            // el listener no debe frenar el resto
+          }
+        }
+      } finally {
+        avisandoSesionVencida = false;
+      }
+    }
+    return Promise.reject(error);
+  },
+);
+
 api.interceptors.request.use(async (config) => {
   try {
+    config.headers = config.headers ?? {};
+    if (typeof FormData !== "undefined" && config.data instanceof FormData) {
+      if (config.headers.delete) {
+        config.headers.delete("Content-Type");
+        config.headers.delete("content-type");
+      } else {
+        delete config.headers["Content-Type"];
+        delete config.headers["content-type"];
+      }
+    }
+    if (!config.headers["X-Client-Info"]) {
+      config.headers["X-Client-Info"] = "vigicontrol-app";
+    }
     const session = await getStoredSession();
     if (session?.token) {
-      config.headers = config.headers ?? {};
       if (!config.headers.Authorization) {
         config.headers.Authorization = `Bearer ${session.token}`;
       }
