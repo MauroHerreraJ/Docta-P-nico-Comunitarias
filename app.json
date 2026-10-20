@@ -54,7 +54,14 @@
         }
       ],
       "expo-audio",
-      "expo-camera"
+      "expo-camera",
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "Docta necesita acceder a tus fotos para adjuntarlas al reporte.",
+          "cameraPermission": "Docta necesita la cámara para adjuntar fotos al reporte."
+        }
+      ]
     ],
     "ios": {
       "supportsTablet": true,

@@ -6,11 +6,11 @@ Sentry.init({
 });
 
 import { StatusBar } from "expo-status-bar";
-import { NavigationContainer } from "@react-navigation/native";
+import { NavigationContainer, createNavigationContainerRef } from "@react-navigation/native";
 import { createNativeStackNavigator } from "@react-navigation/native-stack";
 import { createBottomTabNavigator } from "@react-navigation/bottom-tabs";
 import { Ionicons } from "@expo/vector-icons";
-import { Image, Modal, View, Text, TouchableOpacity, StyleSheet, Alert, Animated, Platform } from "react-native";
+import { Image, Modal, View, Text, TouchableOpacity, StyleSheet, Alert, Animated, Platform, AppState } from "react-native";
 import { useFonts } from "expo-font";
 import * as SplashScreen from "expo-splash-screen";
 import { useEffect, useState, useRef } from "react";
@@ -29,7 +29,7 @@ import User from "./screen/User";
 import Welcome from "./screen/Welcome";
 import MasterCode from "./screen/MasterCode";
 import Multimedia from "./screen/Multimedia";
-import { getPanicAppByCode, registerNotificationToken, onUnauthorized } from "./util/Api";
+import { getPanicAppByCode, registerNotificationToken, onUnauthorized, onLicenseDisabled, onLicenseDeleted, fetchChatMessages, checkDeviceStatus, isLicenseDisabledPayload, isLicenseDisabledError, isLicenseDeletedError, clearDocta4LocalSession, LICENSE_DELETED_KEY } from "./util/Api";
 import { extractOnboardingCode } from "./util/onboardingCode";
 import { registerForPushNotificationsAsync } from "./util/Notifications";
 import * as Notifications from 'expo-notifications';
@@ -37,6 +37,43 @@ import * as Updates from 'expo-updates';
 
 const Stack = createNativeStackNavigator();
 const BottomTabs = createBottomTabNavigator();
+const navigationRef = createNavigationContainerRef();
+
+const LAST_NOTIF_ID_KEY = "@last_handled_notification_id";
+const CHAT_WATERMARK_KEY = "@chat_watermark";
+
+const parseNotificationData = (content) => {
+  if (!content) return {};
+  let data = content.data;
+  if (typeof data === "string") {
+    try {
+      data = JSON.parse(data);
+    } catch {
+      data = {};
+    }
+  }
+  return data && typeof data === "object" ? data : {};
+};
+
+const getNotificationTipo = (content) => {
+  const data = parseNotificationData(content);
+  return String(data.tipo || data.type || "").toLowerCase();
+};
+
+const isChatNotification = (content) => {
+  const tipo = getNotificationTipo(content);
+  if (tipo === "chat") return true;
+  return /tenés un mensaje nuevo|tenes un mensaje nuevo|mensaje nuevo/i.test(content?.body || "");
+};
+
+const getCurrentRouteName = () => {
+  if (!navigationRef.isReady()) return null;
+  let route = navigationRef.getRootState()?.routes?.[navigationRef.getRootState().index];
+  while (route?.state?.routes) {
+    route = route.state.routes[route.state.index];
+  }
+  return route?.name || null;
+};
 
 // 🔹 Función para obtener la clave de almacenamiento según el producto
 const getStorageKey = (product) => {
@@ -44,7 +81,6 @@ const getStorageKey = (product) => {
   return `@licencias_${product}`;
 };
 
-// 🔹 Componente para el icono animado de pánico/multimedia
 const PulseIcon = ({ name, size, color }) => {
   const scale = useRef(new Animated.Value(1)).current;
 
@@ -72,8 +108,65 @@ const PulseIcon = ({ name, size, color }) => {
   );
 };
 
-function EventModal({ visible, onClose, eventData }) {
+const ChatTabIcon = ({ color, size, unread }) => (
+  <View>
+    <Ionicons name="chatbubbles" size={size} color={color} />
+    {unread ? <View style={styles.unreadDot} /> : null}
+  </View>
+);
+
+function LicenseDisabledModal({ visible, onAccept }) {
+  return (
+    <Modal
+      animationType="fade"
+      transparent={true}
+      visible={visible}
+      onRequestClose={onAccept}
+    >
+      <View style={styles.modalOverlay}>
+        <View style={styles.modalContent}>
+          <Ionicons name="lock-closed" size={80} color="#E74C3C" />
+          <Text style={styles.modalTitle}>Cuenta deshabilitada</Text>
+          <Text style={styles.modalBody}>
+            Su cuenta está deshabilitada, comuníquese con su administrador.
+          </Text>
+          <TouchableOpacity style={styles.closeButton} onPress={onAccept}>
+            <Text style={styles.closeButtonText}>ACEPTAR</Text>
+          </TouchableOpacity>
+        </View>
+      </View>
+    </Modal>
+  );
+}
+
+function LicenseDeletedModal({ visible, onAccept }) {
+  return (
+    <Modal
+      animationType="fade"
+      transparent={true}
+      visible={visible}
+      onRequestClose={() => {}}
+    >
+      <View style={styles.modalOverlay}>
+        <View style={styles.modalContent}>
+          <Ionicons name="trash" size={80} color="#E74C3C" />
+          <Text style={styles.modalTitle}>Licencia eliminada</Text>
+          <Text style={styles.modalBody}>
+            Licencia eliminada, contactarse con administrador.
+          </Text>
+          <TouchableOpacity style={styles.closeButton} onPress={onAccept}>
+            <Text style={styles.closeButtonText}>ACEPTAR</Text>
+          </TouchableOpacity>
+        </View>
+      </View>
+    </Modal>
+  );
+}
+
+function EventModal({ visible, onClose, eventData, onOpenChat }) {
   if (!eventData) return null;
+
+  const isChat = eventData.kind === "chat";
 
   // Función para resaltar el número de equipo en el cuerpo del mensaje
   const renderBody = (text) => {
@@ -103,13 +196,39 @@ function EventModal({ visible, onClose, eventData }) {
     >
       <View style={styles.modalOverlay}>
         <View style={styles.modalContent}>
-          <Ionicons name="notifications-circle" size={80} color="#E74C3C" />
-          <Text style={styles.modalTitle}>{eventData.title || "!Alarma Activada!"}</Text>
-          {renderBody(eventData.body)}
-          
-          <TouchableOpacity style={styles.closeButton} onPress={onClose}>
-            <Text style={styles.closeButtonText}>ENTENDIDO</Text>
-          </TouchableOpacity>
+          <Ionicons
+            name={isChat ? "chatbubbles" : "notifications-circle"}
+            size={80}
+            color={isChat ? "#222266" : "#E74C3C"}
+          />
+          <Text style={styles.modalTitle}>
+            {isChat ? "Tenés un mensaje nuevo" : (eventData.title || "!Alarma Activada!")}
+          </Text>
+          {isChat ? (
+            <Text style={styles.modalBody}>La central de monitoreo te escribió.</Text>
+          ) : (
+            renderBody(eventData.body)
+          )}
+
+          {isChat ? (
+            <>
+              <TouchableOpacity
+                style={styles.closeButton}
+                onPress={() => {
+                  if (typeof onOpenChat === "function") onOpenChat();
+                }}
+              >
+                <Text style={styles.closeButtonText}>VER MENSAJE</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={styles.secondaryButton} onPress={onClose}>
+                <Text style={styles.secondaryButtonText}>CERRAR</Text>
+              </TouchableOpacity>
+            </>
+          ) : (
+            <TouchableOpacity style={styles.closeButton} onPress={onClose}>
+              <Text style={styles.closeButtonText}>ENTENDIDO</Text>
+            </TouchableOpacity>
+          )}
         </View>
       </View>
     </Modal>
@@ -226,31 +345,56 @@ function multimediaTabGuard(onFinalize) {
   });
 }
 
-function AuthorizedNavigation({ activeProduct }) {
+function AuthorizedNavigation({ activeProduct, pendingOpenChat, onChatOpened, showChatTab, chatUnread, onChatTabOpened, onChatTabClosed }) {
   const [logoUrl, setLogoUrl] = useState("https://i.imgur.com/aIYhRsN.png");
   const [headerBgColor, setHeaderBgColor] = useState("white");
   const [headerTxtColor, setHeaderTxtColor] = useState("Black");
   const [isMultimediaEnabled, setIsMultimediaEnabled] = useState(false);
   const [activePanicId, setActivePanicId] = useState(null);
+  const [chatWatermark, setChatWatermark] = useState(0);
+  const [chatSessionNonce, setChatSessionNonce] = useState(0);
+  const [resumeChat, setResumeChat] = useState(false);
   const timerRef = useRef(null);
+  const tabNavRef = useRef(null);
 
-  const activateMultimedia = (serverResult) => {
+  const startNewChatSession = async () => {
+    try {
+      const prev = Number((await AsyncStorage.getItem(CHAT_WATERMARK_KEY)) || 0);
+      const data = await fetchChatMessages(prev);
+      const watermark = data?.ultima_secuencia != null ? data.ultima_secuencia : prev;
+      await AsyncStorage.setItem(CHAT_WATERMARK_KEY, String(watermark));
+      setChatWatermark(watermark);
+      console.log("💬 Chat nuevo. Corte de secuencia:", watermark);
+    } catch (e) {
+      console.warn("No se pudo cortar el historial de chat:", e);
+    } finally {
+      setResumeChat(false);
+      setChatSessionNonce((n) => n + 1);
+    }
+  };
+
+  const activateMultimedia = (serverResult, options = {}) => {
     // Si es un usuario Legacy (Desit Server), no habilitamos Multimedia
     if (activeProduct === "docta_legacy") {
       console.log("ℹ️ Multimedia no disponible para producto Legacy");
       return;
     }
 
-    // Si el servidor ya manda el ID (ej: result.id), lo guardamos. 
-    // Si no, queda como null por ahora.
     const id = serverResult?.id || serverResult?.event_id || null;
     console.log("🔔 Multimedia activada. ID de evento vinculado:", id);
     
     setActivePanicId(id);
     setIsMultimediaEnabled(true);
     if (timerRef.current) clearTimeout(timerRef.current);
+
+    if (options.keepOpen) {
+      setResumeChat(true);
+      return;
+    }
+
+    startNewChatSession();
     
-    // Auto-cierre en 5 minutos
+    // Auto-cierre en 5 minutos (pánico reciente). El chat reabierto por push no se cierra solo.
     timerRef.current = setTimeout(() => {
       setIsMultimediaEnabled(false);
       setActivePanicId(null);
@@ -261,6 +405,11 @@ function AuthorizedNavigation({ activeProduct }) {
     if (timerRef.current) clearTimeout(timerRef.current);
     setIsMultimediaEnabled(false);
     setActivePanicId(null);
+  };
+
+  const leaveChat = () => {
+    deactivateMultimedia();
+    if (typeof onChatTabClosed === "function") onChatTabClosed();
   };
 
   useEffect(() => {
@@ -298,9 +447,51 @@ function AuthorizedNavigation({ activeProduct }) {
     loadPanicAppData();
   }, []);
 
+  useEffect(() => {
+    const loadChatWatermark = async () => {
+      try {
+        const stored = await AsyncStorage.getItem(CHAT_WATERMARK_KEY);
+        if (stored != null) setChatWatermark(Number(stored) || 0);
+      } catch (e) {
+        console.warn("No se pudo leer el corte de chat:", e);
+      }
+    };
+    loadChatWatermark();
+  }, []);
+
+  useEffect(() => {
+    if (!pendingOpenChat || activeProduct === "docta_legacy") return;
+
+    activateMultimedia({ fromPush: true }, { keepOpen: true });
+    let cancelled = false;
+    const tryNavigate = (attempt = 0) => {
+      if (cancelled) return;
+      const tabNav = tabNavRef.current;
+      if (tabNav?.navigate) {
+        tabNav.navigate("Multimedia");
+        if (typeof onChatOpened === "function") onChatOpened();
+        return;
+      }
+      if (navigationRef.isReady()) {
+        navigationRef.navigate("Principal", { screen: "Multimedia" });
+        if (typeof onChatOpened === "function") onChatOpened();
+        return;
+      }
+      if (attempt < 12) {
+        setTimeout(() => tryNavigate(attempt + 1), 200);
+      }
+    };
+    const timer = setTimeout(() => tryNavigate(0), 250);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [pendingOpenChat, activeProduct]);
+
   return (
     <BottomTabs.Navigator
-      screenListeners={multimediaTabGuard(deactivateMultimedia)}
+      ref={tabNavRef}
+      screenListeners={multimediaTabGuard(leaveChat)}
       screenOptions={{
         headerStyle: { backgroundColor: headerBgColor, height: 120 },
         headerTintColor: headerTxtColor,
@@ -343,12 +534,17 @@ function AuthorizedNavigation({ activeProduct }) {
         )}
       </BottomTabs.Screen>
 
-      {/* 📸 PESTAÑA MULTIMEDIA (Registrada pero oculta de la barra inferior) */}
+      {/* Chat: oculto hasta un mensaje nuevo; al salir de Multimedia desaparece */}
       {activeProduct !== "docta_legacy" && (
         <BottomTabs.Screen
           name="Multimedia"
           options={{
-            tabBarButton: () => null, // Ocultar de la barra inferior
+            title: "",
+            tabBarLabel: "Chat",
+            ...(showChatTab ? {} : { tabBarButton: () => null }),
+            tabBarIcon: ({ color, size }) => (
+              <ChatTabIcon color={color} size={size} unread={chatUnread} />
+            ),
             headerTitle: () => (
               <Image
                 source={{ uri: logoUrl }}
@@ -363,12 +559,21 @@ function AuthorizedNavigation({ activeProduct }) {
               justifyContent: 'center',
             },
           }}
+          listeners={{
+            tabPress: () => {
+              activateMultimedia({ fromChatTab: true }, { keepOpen: true });
+              if (typeof onChatTabOpened === "function") onChatTabOpened();
+            },
+          }}
         >
           {(props) => (
             <Multimedia 
               {...props} 
-              panicId={activePanicId} 
-              onFinalize={deactivateMultimedia} 
+              panicId={activePanicId}
+              chatWatermark={chatWatermark}
+              chatSessionNonce={chatSessionNonce}
+              resumeChat={resumeChat}
+              onFinalize={leaveChat} 
             />
           )}
         </BottomTabs.Screen>
@@ -595,7 +800,9 @@ function ProductSpecificNavigation({ onReset }) {
         {(props) => (
           <Multimedia 
             {...props} 
-            panicId={activePanicId} 
+            panicId={activePanicId}
+            resumeChat
+            chatSessionNonce={1}
             onFinalize={deactivateMultimedia} 
           />
         )}
@@ -668,17 +875,93 @@ function App() {
   const [notification, setNotification] = useState(false);
   const [showEventModal, setShowEventModal] = useState(false);
   const [eventData, setEventData] = useState(null);
+  const [pendingOpenChat, setPendingOpenChat] = useState(false);
+  const [showChatTab, setShowChatTab] = useState(false);
+  const [chatUnread, setChatUnread] = useState(false);
+  const [licenseDisabled, setLicenseDisabled] = useState(false);
+  const [licenseDeleted, setLicenseDeleted] = useState(false);
+  const licenseDisabledDismissedRef = useRef(false);
+
+  onUnauthorized(() => {
+    console.log("⚠️ App detectó 401: Redirigiendo a configuración...");
+    licenseDisabledDismissedRef.current = false;
+    setLicenseDisabled(false);
+    setIsAuthorized(false);
+  });
+  onLicenseDisabled(() => {
+    console.log("🚫 Licencia deshabilitada: se muestra aviso y se conserva la sesión.");
+    licenseDisabledDismissedRef.current = false;
+    setLicenseDeleted(false);
+    setLicenseDisabled(true);
+  });
+  onLicenseDeleted(() => {
+    console.log("🗑️ Licencia dada de baja: se muestra aviso para volver a Master.");
+    setLicenseDisabled(false);
+    setLicenseDeleted(true);
+  });
+
+  const acceptLicenseDeleted = async () => {
+    try {
+      await clearDocta4LocalSession();
+    } catch (e) {
+      console.warn("No se pudo limpiar la sesión local:", e);
+    }
+    setLicenseDeleted(false);
+    setLicenseDisabled(false);
+    setIsAuthorized(false);
+    setHasMasterCode(false);
+    setActiveProduct(null);
+    setActivationData(null);
+  };
+
+  const dismissLicenseDisabled = () => {
+    licenseDisabledDismissedRef.current = true;
+    setLicenseDisabled(false);
+  };
 
   useEffect(() => {
-    // Función para normalizar y mostrar los datos de la notificación
-    const handleEventNotification = (content) => {
-      if (!content) return;
-      
-      console.log("Procesando contenido de notificación:", content);
-      
-      // Usamos el cuerpo (body) que envía el servidor directamente
-      const body = content.body || "La alarma de su zona se ha activado.";
+    const markHandled = async (identifier) => {
+      if (!identifier) return true;
+      const seen = await AsyncStorage.getItem(LAST_NOTIF_ID_KEY);
+      if (seen === identifier) return false;
+      await AsyncStorage.setItem(LAST_NOTIF_ID_KEY, identifier);
+      return true;
+    };
 
+    const openChatFromPush = () => {
+      console.log("📬 Push de chat: se reabre Multimedia");
+      setShowChatTab(true);
+      setChatUnread(false);
+      setPendingOpenChat(true);
+    };
+
+    const handleEventNotification = (content, { userTapped = false } = {}) => {
+      if (!content) return;
+
+      console.log("Procesando contenido de notificación:", content);
+      const tipo = getNotificationTipo(content);
+
+      if (isChatNotification(content)) {
+        if (userTapped) {
+          setShowEventModal(false);
+          openChatFromPush();
+          return;
+        }
+        if (getCurrentRouteName() === "Multimedia") return;
+        setEventData({
+          kind: "chat",
+          title: "Tenés un mensaje nuevo",
+          body: content.body || "Tenés un mensaje nuevo",
+        });
+        setShowEventModal(true);
+        return;
+      }
+
+      if (tipo === "cambio_celular") {
+        return;
+      }
+
+      const body = content.body || "La alarma de su zona se ha activado.";
       setEventData({
         title: "!Alarma Activada!",
         body: body,
@@ -687,13 +970,15 @@ function App() {
       setShowEventModal(true);
     };
 
-    // Función para revisar si la app se abrió desde una notificación (cuando estaba cerrada)
     const checkInitialNotification = async () => {
       try {
         const response = await Notifications.getLastNotificationResponseAsync();
         if (response && response.notification) {
+          const identifier = response.notification.request?.identifier;
+          const isNew = await markHandled(identifier);
+          if (!isNew) return;
           console.log("App abierta desde notificación (inicial):", response);
-          handleEventNotification(response.notification.request.content);
+          handleEventNotification(response.notification.request.content, { userTapped: true });
         }
       } catch (error) {
         console.error("Error al obtener la notificación inicial:", error);
@@ -724,14 +1009,16 @@ function App() {
     // Listener para cuando llega una notificación mientras la app está abierta
     const notificationListener = Notifications.addNotificationReceivedListener(notification => {
       setNotification(notification);
-      handleEventNotification(notification.request.content);
+      handleEventNotification(notification.request.content, { userTapped: false });
     });
 
-    // Listener para cuando el usuario toca la notificación
-    const responseListener = Notifications.addNotificationResponseReceivedListener(response => {
+    const responseListener = Notifications.addNotificationResponseReceivedListener(async (response) => {
       console.log("Notificación tocada:", response);
       if (response && response.notification) {
-        handleEventNotification(response.notification.request.content);
+        const identifier = response.notification.request?.identifier;
+        const isNew = await markHandled(identifier);
+        if (!isNew) return;
+        handleEventNotification(response.notification.request.content, { userTapped: true });
       }
     });
 
@@ -762,14 +1049,6 @@ function App() {
   }, []);
 
   useEffect(() => {
-    // Suscribirse a errores de autenticación (401)
-    onUnauthorized(() => {
-      console.log("⚠️ App detectó 401: Redirigiendo a configuración...");
-      setIsAuthorized(false);
-      // No reseteamos hasMasterCode porque el equipo sigue siendo el mismo, 
-      // solo se invalidó el token del dispositivo.
-    });
-
     async function prepare() {
       try {
         // Precargar todos los assets locales (imágenes)
@@ -819,6 +1098,11 @@ function App() {
             if (activeProd === "docta_panico") {
               await migrateExistingUsers(licenseData, activeProd);
             }
+          }
+
+          const deletedFlag = await AsyncStorage.getItem(LICENSE_DELETED_KEY);
+          if (deletedFlag === "1") {
+            setLicenseDeleted(true);
           }
         } else {
           // CASO LEGACY: No hay master_config, buscamos la licencia original
@@ -870,6 +1154,53 @@ function App() {
   }, []);
 
   useEffect(() => {
+    const isDocta4Product =
+      activeProduct === "docta_panico" || activeProduct === "docta_comunitarias";
+    if (!isAuthorized || !isDocta4Product) return undefined;
+
+    let cancelled = false;
+    const verifyLicense = async () => {
+      try {
+        const data = await checkDeviceStatus({ silent: true });
+        if (cancelled) return;
+        if (isLicenseDisabledPayload(data)) {
+          if (!licenseDisabledDismissedRef.current) setLicenseDisabled(true);
+        } else {
+          licenseDisabledDismissedRef.current = false;
+          if (licenseDisabled) setLicenseDisabled(false);
+        }
+      } catch (error) {
+        if (cancelled) return;
+        if (isLicenseDeletedError(error)) {
+          licenseDisabledDismissedRef.current = false;
+          setLicenseDisabled(false);
+          setLicenseDeleted(true);
+          try {
+            await AsyncStorage.setItem(LICENSE_DELETED_KEY, "1");
+          } catch (e) {}
+          return;
+        }
+        if (isLicenseDisabledError(error) && !licenseDisabledDismissedRef.current) {
+          setLicenseDisabled(true);
+        }
+      }
+    };
+
+    verifyLicense();
+    const intervalMs = licenseDisabled ? 8000 : 30000;
+    const intervalId = setInterval(verifyLicense, intervalMs);
+    const appStateSub = AppState.addEventListener("change", (next) => {
+      if (next === "active") verifyLicense();
+    });
+
+    return () => {
+      cancelled = true;
+      clearInterval(intervalId);
+      appStateSub.remove();
+    };
+  }, [isAuthorized, activeProduct, licenseDisabled]);
+
+  useEffect(() => {
     const handleDeepLink = (url) => {
       if (!url) return;
       console.log("🔗 Deep Link detectado:", url);
@@ -907,7 +1238,7 @@ function App() {
   return (
     <>
       <StatusBar style="dark" />
-      <NavigationContainer>
+      <NavigationContainer ref={navigationRef}>
         <Stack.Navigator
           screenOptions={{
             headerStyle: { height: 120 },
@@ -957,7 +1288,21 @@ function App() {
                 name="Principal"
                 options={{ headerShown: false }}
               >
-                {(props) => <AuthorizedNavigation {...props} activeProduct={activeProduct} />}
+                {(props) => (
+                  <AuthorizedNavigation
+                    {...props}
+                    activeProduct={activeProduct}
+                    pendingOpenChat={pendingOpenChat}
+                    onChatOpened={() => setPendingOpenChat(false)}
+                    showChatTab={showChatTab}
+                    chatUnread={chatUnread}
+                    onChatTabOpened={() => setChatUnread(false)}
+                    onChatTabClosed={() => {
+                      setShowChatTab(false);
+                      setChatUnread(false);
+                    }}
+                  />
+                )}
               </Stack.Screen>
             ) : (
               // Nueva navegación para otros productos (Vigilantes, Ciudadanos, etc.)
@@ -994,10 +1339,27 @@ function App() {
           />
         </Stack.Navigator>
       </NavigationContainer>
+      <LicenseDisabledModal
+        visible={licenseDisabled && !licenseDeleted}
+        onAccept={dismissLicenseDisabled}
+      />
+      <LicenseDeletedModal visible={licenseDeleted} onAccept={acceptLicenseDeleted} />
       <EventModal 
-        visible={showEventModal} 
-        onClose={() => setShowEventModal(false)} 
-        eventData={eventData} 
+        visible={showEventModal && !licenseDisabled && !licenseDeleted} 
+        onClose={() => {
+          setShowEventModal(false);
+          if (eventData?.kind === "chat") {
+            setShowChatTab(true);
+            setChatUnread(true);
+          }
+        }} 
+        eventData={eventData}
+        onOpenChat={() => {
+          setShowEventModal(false);
+          setShowChatTab(true);
+          setChatUnread(false);
+          setPendingOpenChat(true);
+        }}
       />
     </>
   );
@@ -1051,10 +1413,36 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontFamily: 'open-sans-bold',
   },
+  secondaryButton: {
+    marginTop: 12,
+    paddingVertical: 12,
+    paddingHorizontal: 30,
+    borderRadius: 10,
+    width: '100%',
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: '#222266',
+  },
+  secondaryButtonText: {
+    color: '#222266',
+    fontSize: 16,
+    fontFamily: 'open-sans-bold',
+  },
   boldText: {
     fontFamily: 'open-sans-bold',
     fontWeight: 'bold',
     color: '#2C3E50',
+  },
+  unreadDot: {
+    position: "absolute",
+    top: -2,
+    right: -4,
+    width: 10,
+    height: 10,
+    borderRadius: 5,
+    backgroundColor: "#E74C3C",
+    borderWidth: 1.5,
+    borderColor: "white",
   },
 });
 

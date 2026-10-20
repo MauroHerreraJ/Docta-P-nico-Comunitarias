@@ -215,6 +215,8 @@ const AllButtons = ({ onPanicSuccess, onPanicCancel, activeProduct, externalPani
       
     } catch (error) {
       console.error(error);
+      const status = error?.response?.status;
+      if (status === 401 || status === 403 || status === 410) return;
       Alert.alert("Error", "No se pudo establecer comunicación con el centro de monitoreo.");
     }
   };

@@ -6,7 +6,7 @@ import { useCallback } from "react";
 import { useFocusEffect } from "@react-navigation/native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
-import { deleteLicenseAccount } from "../util/Api";
+import { deleteLicenseAccount, clearDocta4LocalSession } from "../util/Api";
 
 function User({ navigation, activeProduct }) {
   const [licencia, setLicencia] = useState(null);
@@ -225,12 +225,20 @@ function User({ navigation, activeProduct }) {
   const confirmDelete = async () => {
     if (!isLicenseValid) return;
 
+    const isLegacy = activeProduct === "docta_legacy";
+
     try {
-      if (licencia && licencia.code) {
-        await deleteLicenseAccount(licencia.code);
+      if (isLegacy) {
+        if (licencia && licencia.code) {
+          await deleteLicenseAccount(licencia.code);
+        }
+        const specificKey = getStorageKey(activeProduct);
+        await AsyncStorage.removeItem(specificKey);
+      } else {
+        await deleteLicenseAccount(licencia?.code);
+        await clearDocta4LocalSession();
       }
-      const specificKey = getStorageKey(activeProduct);
-      await AsyncStorage.removeItem(specificKey);
+
       setLicencia(null);
       setIsDeleteModalVisible(false);
       Alert.alert("Éxito", "La licencia ha sido eliminada correctamente.", [
@@ -248,6 +256,7 @@ function User({ navigation, activeProduct }) {
         }
       ]);
     } catch (error) {
+      console.error("Error al eliminar licencia:", error?.response?.data || error.message);
       Alert.alert("Error", "No se pudo eliminar la licencia del servidor. Inténtalo de nuevo.");
     }
   };

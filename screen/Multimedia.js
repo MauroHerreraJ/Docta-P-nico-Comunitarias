@@ -17,6 +17,7 @@ import {
   Vibration,
   Keyboard,
   BackHandler,
+  AppState,
 } from "react-native";
 import { Ionicons, MaterialIcons } from "@expo/vector-icons";
 import { useNavigation, useFocusEffect } from "@react-navigation/native";
@@ -96,7 +97,7 @@ const AudioMessage = ({ uri, isMine }) => {
   );
 };
 
-function Multimedia({ onFinalize, panicId }) {
+function Multimedia({ onFinalize, panicId, chatWatermark = 0, chatSessionNonce = 0, resumeChat = false }) {
   const navigation = useNavigation();
   const inputRef = useRef(null);
   const [text, setText] = useState("");
@@ -277,10 +278,57 @@ function Multimedia({ onFinalize, panicId }) {
     lastSequenceRef.current = lastSequence;
   }, [lastSequence]);
 
-  // Carga inicial y polling de mensajes
+  const startPolling = () => {
+    if (pollTimer.current) clearInterval(pollTimer.current);
+    pollTimer.current = setInterval(() => {
+      refreshChat({ from: lastSequenceRef.current });
+    }, 5000);
+  };
+
+  const mergeIncomingMessages = (incoming) => {
+    if (!incoming?.length) return;
+    setMessages((prev) => {
+      let updatedList = [...prev];
+      incoming.forEach((nm) => {
+        const index = updatedList.findIndex(
+          (pm) => pm.client_message_id && pm.client_message_id === nm.client_message_id
+        );
+
+        if (index !== -1) {
+          updatedList[index] = { ...updatedList[index], ...nm, loading: false };
+        } else if (!updatedList.some((pm) => pm.secuencia === nm.secuencia)) {
+          updatedList.push(nm);
+        }
+      });
+      return updatedList.sort((a, b) => (a.secuencia || 0) - (b.secuencia || 0));
+    });
+  };
+
+  const messagesNewerThan = (incoming, from) =>
+    (incoming || []).filter((m) => m.secuencia == null || m.secuencia > from);
+
+  const refreshChat = async ({ from = lastSequenceRef.current, showLoading = false, replace = false } = {}) => {
+    if (showLoading) setLoading((prev) => ({ ...prev, messages: true }));
+    try {
+      const data = await fetchChatMessages(from);
+      const incoming = messagesNewerThan(data.mensajes, from);
+      if (replace) {
+        setMessages(incoming.sort((a, b) => (a.secuencia || 0) - (b.secuencia || 0)));
+      } else if (incoming.length > 0) {
+        mergeIncomingMessages(incoming);
+      }
+      if (data.ultima_secuencia != null) {
+        setLastSequence(data.ultima_secuencia);
+      }
+    } catch (error) {
+      console.warn("Error leyendo chat:", error);
+    } finally {
+      if (showLoading) setLoading((prev) => ({ ...prev, messages: false }));
+    }
+  };
+
   useEffect(() => {
-    const setupChat = async () => {
-      // Configurar audio globalmente para esta pantalla una sola vez
+    const setupAudio = async () => {
       try {
         await setAudioModeAsync({
           allowsRecording: true,
@@ -292,66 +340,50 @@ function Multimedia({ onFinalize, panicId }) {
       } catch (e) {
         console.warn("Error configurando modo de audio inicial:", e);
       }
-
-      await initializeChat();
-      startPolling();
     };
-    
-    setupChat();
-
+    setupAudio();
     return () => {
       if (recordingTimer.current) clearTimeout(recordingTimer.current);
       if (pollTimer.current) clearInterval(pollTimer.current);
     };
   }, []);
 
-  const initializeChat = async () => {
-    setLoading(prev => ({ ...prev, messages: true }));
-    try {
-      // Obtenemos la última secuencia actual para ignorar el historial
-      const data = await fetchChatMessages(0);
-      if (data.ultima_secuencia) {
-        setLastSequence(data.ultima_secuencia);
-        console.log("Chat inicializado desde secuencia:", data.ultima_secuencia);
-      }
-      setMessages([]); // Aseguramos que el chat empiece vacío visualmente
-    } catch (error) {
-      console.error("Error al inicializar chat:", error);
-    } finally {
-      setLoading(prev => ({ ...prev, messages: false }));
-    }
-  };
+  useEffect(() => {
+    if (!chatSessionNonce && !resumeChat) return undefined;
 
-  const startPolling = () => {
-    pollTimer.current = setInterval(async () => {
-      try {
-        const data = await fetchChatMessages(lastSequenceRef.current);
-        if (data.mensajes && data.mensajes.length > 0) {
-          setMessages(prev => {
-            let updatedList = [...prev];
-            data.mensajes.forEach(nm => {
-              const index = updatedList.findIndex(pm => 
-                pm.client_message_id && pm.client_message_id === nm.client_message_id
-              );
-              
-              if (index !== -1) {
-                // Actualizamos el mensaje optimista con los datos reales del servidor
-                updatedList[index] = { ...updatedList[index], ...nm, loading: false };
-              } else if (!updatedList.some(pm => pm.secuencia === nm.secuencia)) {
-                // Es un mensaje nuevo (ej: del operador)
-                updatedList.push(nm);
-              }
-            });
-            // Ordenar siempre por secuencia para evitar desorden por retardos de red
-            return updatedList.sort((a, b) => (a.secuencia || 0) - (b.secuencia || 0));
-          });
-          setLastSequence(data.ultima_secuencia);
-        }
-      } catch (error) {
-        console.warn("Error en polling de chat:", error);
+    let cancelled = false;
+    const startSession = async () => {
+      const from = Number(chatWatermark || 0);
+      lastSequenceRef.current = from;
+      setLastSequence(from);
+      if (resumeChat) {
+        await refreshChat({ from, showLoading: true, replace: true });
+      } else {
+        setMessages([]);
       }
-    }, 5000); // Cada 5 segundos
-  };
+      if (!cancelled) startPolling();
+    };
+    startSession();
+
+    return () => {
+      cancelled = true;
+      if (pollTimer.current) clearInterval(pollTimer.current);
+    };
+  }, [chatSessionNonce, resumeChat, chatWatermark]);
+
+  useFocusEffect(
+    useCallback(() => {
+      if (chatSessionNonce || resumeChat) {
+        refreshChat({ from: lastSequenceRef.current });
+      }
+      const sub = AppState.addEventListener("change", (next) => {
+        if (next === "active" && (chatSessionNonce || resumeChat)) {
+          refreshChat({ from: lastSequenceRef.current });
+        }
+      });
+      return () => sub.remove();
+    }, [chatSessionNonce, resumeChat])
+  );
 
   const handleSend = async () => {
     if (!text.trim() && images.length === 0 && !audioUri) return;
@@ -425,7 +457,29 @@ function Multimedia({ onFinalize, panicId }) {
     if (!result.canceled) {
       const newUri = result.assets[0].uri;
       setImages(prev => [...prev, newUri]);
-      // En un flujo real, aquí subiríamos la foto y luego enviaríamos el mensaje de chat
+    }
+  };
+
+  const pickFromGallery = async () => {
+    if (images.length >= 3) {
+      Alert.alert("Límite alcanzado", "Solo puede adjuntar hasta 3 imágenes.");
+      return;
+    }
+
+    const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (status !== "granted") {
+      Alert.alert("Permiso denegado", "Se necesita permiso para acceder a la galería.");
+      return;
+    }
+
+    const result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ["images"],
+      allowsEditing: false,
+      quality: 0.6,
+    });
+
+    if (!result.canceled && result.assets?.[0]?.uri) {
+      setImages((prev) => [...prev, result.assets[0].uri]);
     }
   };
 
@@ -664,6 +718,10 @@ function Multimedia({ onFinalize, panicId }) {
           ]}>
             <TouchableOpacity style={styles.iconBtn} onPress={takePhoto}>
               <Ionicons name="camera" size={28} color="#222266" />
+            </TouchableOpacity>
+
+            <TouchableOpacity style={styles.iconBtn} onPress={pickFromGallery}>
+              <Ionicons name="attach" size={28} color="#222266" style={{ transform: [{ rotate: "-45deg" }] }} />
             </TouchableOpacity>
 
             <TextInput

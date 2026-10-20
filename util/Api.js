@@ -19,26 +19,117 @@ const X_DOCTA_APP_KEY = "SA7UMkePJLYwZuY34lc2qUaopm7POcXlJLUNyBjq";
 
 // 🔹 Manejo de errores de autenticación
 let unauthorizedCallback = null;
+let licenseDisabledCallback = null;
+let licenseDeletedCallback = null;
+
+export const LICENSE_DELETED_KEY = "@license_deleted";
 
 export const onUnauthorized = (callback) => {
   unauthorizedCallback = callback;
 };
 
-// Interceptor de Axios para manejar 401 globalmente
+export const onLicenseDisabled = (callback) => {
+  licenseDisabledCallback = callback;
+};
+
+export const onLicenseDeleted = (callback) => {
+  licenseDeletedCallback = callback;
+};
+
+const getErrorData = (error) => {
+  const data = error?.response?.data;
+  if (!data) return {};
+  if (typeof data === "string") {
+    try {
+      return JSON.parse(data);
+    } catch {
+      return { message: data };
+    }
+  }
+  return data;
+};
+
+const getErrorCode = (error) =>
+  String(getErrorData(error).code || getErrorData(error).error_code || "").toUpperCase();
+
+const getErrorMotivo = (error) =>
+  String(getErrorData(error).motivo || "").toLowerCase();
+
+export const isLicenseDisabledPayload = (data) => {
+  if (!data || typeof data !== "object") return false;
+  const code = String(data.code || data.error_code || "").toUpperCase();
+  const motivo = String(data.motivo || "").toLowerCase();
+  if (code === "LICENSE_DISABLED" || motivo === "deshabilitada") return true;
+  return false;
+};
+
+export const isLicenseDisabledError = (error) => {
+  const status = error?.response?.status;
+  if (status && status !== 401 && status !== 403) return false;
+  if (getErrorCode(error) === "LICENSE_DISABLED" || getErrorMotivo(error) === "deshabilitada") return true;
+  return isLicenseDisabledPayload(error?.response?.data);
+};
+
+export const isLicenseDeletedError = (error) => {
+  const status = error?.response?.status;
+  const code = getErrorCode(error);
+  const motivo = getErrorMotivo(error);
+  if (code === "LICENSE_DELETED" || motivo === "eliminada") return true;
+  const url = `${error?.config?.baseURL || ""}${error?.config?.url || ""}`;
+  const isDocta4 = url.includes("docta4-api") || url.includes("/modulo/");
+  return status === 410 && isDocta4;
+};
+
+export const clearDocta4LocalSession = async () => {
+  await AsyncStorage.multiRemove([
+    LICENSE_DELETED_KEY,
+    "@device_token",
+    "@master_token",
+    "@device_id",
+    "@master_config",
+    "@licencias",
+    "@licencias_docta_comunitarias",
+    "@chat_watermark",
+  ]);
+};
+
+const isOnboardingRequest = (error) => {
+  const url = `${error?.config?.baseURL || ""}${error?.config?.url || ""}`;
+  return url.includes("/modulo/onboarding");
+};
+
+// Interceptor: 401 LICENSE_DISABLED, 410 LICENSE_DELETED, 401 sin code = sesión inválida
 axios.interceptors.response.use(
   (response) => response,
   async (error) => {
+    if (error.config?.skipAuthHandler) {
+      return Promise.reject(error);
+    }
+
+    if (isOnboardingRequest(error)) {
+      return Promise.reject(error);
+    }
+
+    if (isLicenseDeletedError(error)) {
+      console.log("🗑️ Licencia dada de baja (LICENSE_DELETED).");
+      try {
+        await AsyncStorage.setItem(LICENSE_DELETED_KEY, "1");
+      } catch (e) {}
+      if (licenseDeletedCallback) licenseDeletedCallback();
+      return Promise.reject(error);
+    }
+
+    if (isLicenseDisabledError(error)) {
+      console.log("🚫 Licencia deshabilitada (LICENSE_DISABLED). Se mantiene la sesión local.");
+      if (licenseDisabledCallback) licenseDisabledCallback();
+      return Promise.reject(error);
+    }
+
     if (error.response?.status === 401) {
       console.log("🔴 Sesión expirada o token inválido (401).");
-      
-      // Limpiar tokens
       await AsyncStorage.removeItem("@device_token");
       await AsyncStorage.removeItem("@master_token");
-      
-      // Notificar a la app si hay un callback registrado
-      if (unauthorizedCallback) {
-        unauthorizedCallback();
-      }
+      if (unauthorizedCallback) unauthorizedCallback();
     }
     return Promise.reject(error);
   }
@@ -346,7 +437,7 @@ export const registerDevice = async (regData) => {
 /**
  * Verifica si el token del dispositivo sigue siendo válido.
  */
-export const checkDeviceStatus = async () => {
+export const checkDeviceStatus = async ({ silent = false } = {}) => {
   try {
     const api = await getEndpoints();
     const token = await getAuthToken();
@@ -354,7 +445,8 @@ export const checkDeviceStatus = async () => {
       headers: { 
         Authorization: `Bearer ${token}`,
         "X-Docta-App-Key": X_DOCTA_APP_KEY
-      }
+      },
+      skipAuthHandler: silent,
     });
     return response.data;
   } catch (error) {
@@ -665,8 +757,28 @@ export const savePost = async (newPost) => {
   }
 };
 
+/**
+ * Baja iniciada por el usuario (Play / Sistema).
+ * Docta 4: DELETE /modulo/dispositivos/yo (este teléfono).
+ * Legacy: DELETE /api/v1/user/delete-account (calle).
+ */
 export const deleteLicenseAccount = async (licenseCode) => {
   const api = await getEndpoints();
-  const response = await axios.delete(`${api.user}/delete-account`, { data: { licenseCode } });
+
+  if (api.status) {
+    const token = await getAuthToken();
+    const response = await axios.delete(api.status, {
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "X-Docta-App-Key": X_DOCTA_APP_KEY,
+      },
+      skipAuthHandler: true,
+    });
+    return response.data;
+  }
+
+  const response = await axios.delete(`${api.user}/delete-account`, {
+    data: { licenseCode },
+  });
   return response.data;
 };
