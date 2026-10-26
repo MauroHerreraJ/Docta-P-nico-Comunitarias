@@ -26,14 +26,12 @@ import { Asset } from "expo-asset";
 import AllButtons from "./screen/AllButtons";
 import Configuration from "./screen/Configuration";
 import User from "./screen/User";
-import Welcome from "./screen/Welcome";
 import MasterCode from "./screen/MasterCode";
 import Multimedia from "./screen/Multimedia";
 import { getPanicAppByCode, registerNotificationToken, onUnauthorized, onLicenseDisabled, onLicenseDeleted, fetchChatMessages, checkDeviceStatus, isLicenseDisabledPayload, isLicenseDisabledError, isLicenseDeletedError, clearDocta4LocalSession, LICENSE_DELETED_KEY } from "./util/Api";
 import { extractOnboardingCode } from "./util/onboardingCode";
 import { registerForPushNotificationsAsync } from "./util/Notifications";
 import * as Notifications from 'expo-notifications';
-import * as Updates from 'expo-updates';
 
 const Stack = createNativeStackNavigator();
 const BottomTabs = createBottomTabNavigator();
@@ -80,6 +78,9 @@ const getStorageKey = (product) => {
   if (!product || product === "docta_panico" || product === "docta_legacy") return "@licencias";
   return `@licencias_${product}`;
 };
+
+const isSupportedProduct = (product) =>
+  product === "docta_panico" || product === "docta_legacy" || product === "docta_comunitarias";
 
 const PulseIcon = ({ name, size, color }) => {
   const scale = useRef(new Animated.Value(1)).current;
@@ -609,12 +610,9 @@ function AuthorizedNavigation({ activeProduct, pendingOpenChat, onChatOpened, sh
 }
 
 function NoAuthorizedNavigation({ activeProduct, onAuthorized, activationData, initialOnboardingCode }) {
-  const isDocta = activeProduct === "docta_panico" || activeProduct === "docta_comunitarias";
-  const initialRoute = isDocta ? "Configuration" : "Welcome";
-  
   return (
     <BottomTabs.Navigator
-      initialRouteName={initialRoute}
+      initialRouteName="Configuration"
       screenOptions={{
         headerStyle: { backgroundColor: "#0F76C4", height: 120 },
         headerTintColor: "black",
@@ -622,22 +620,6 @@ function NoAuthorizedNavigation({ activeProduct, onAuthorized, activationData, i
         tabBarStyle: { display: 'none' },
       }}
     >
-      {/* Welcome sigue existiendo para otros productos o por si se necesita */}
-      <BottomTabs.Screen
-        name="Welcome"
-        options={{
-          headerShown: false,
-        }}
-      >
-        {(props) => (
-          <Welcome 
-            {...props} 
-            activeProduct={activeProduct} 
-            onAuthorized={onAuthorized} 
-          />
-        )}
-      </BottomTabs.Screen>
-
       <BottomTabs.Screen
         name="Configuration"
         options={{
@@ -658,201 +640,6 @@ function NoAuthorizedNavigation({ activeProduct, onAuthorized, activationData, i
   );
 }
 
-function ProductSpecificNavigation({ onReset }) {
-  const [productName, setProductName] = useState("Vigilantes");
-  const [logoUrl, setLogoUrl] = useState("https://i.imgur.com/aIYhRsN.png");
-  const [isMultimediaEnabled, setIsMultimediaEnabled] = useState(false);
-  const [activePanicId, setActivePanicId] = useState(null);
-  const timerRef = useRef(null);
-
-  const activateMultimedia = (serverResult) => {
-    // Para simulaciones, generamos un ID si no viene del servidor
-    const id = serverResult?.id || serverResult?.event_id || "SIM-" + Date.now();
-    console.log("🔔 Multimedia activada (Vigi). ID vinculado:", id);
-    
-    setActivePanicId(id);
-    setIsMultimediaEnabled(true);
-    if (timerRef.current) clearTimeout(timerRef.current);
-    timerRef.current = setTimeout(() => {
-      setIsMultimediaEnabled(false);
-      setActivePanicId(null);
-    }, 300000); // 5 min
-  };
-
-  const deactivateMultimedia = () => {
-    if (timerRef.current) clearTimeout(timerRef.current);
-    setIsMultimediaEnabled(false);
-    setActivePanicId(null);
-  };
-
-  useEffect(() => {
-    const loadData = async () => {
-      try {
-        const masterData = await AsyncStorage.getItem("@master_config");
-        if (masterData) {
-          const parsed = JSON.parse(masterData);
-          if (parsed.product === "vigilantes") setProductName("Vigilantes");
-          else if (parsed.product === "ciudadanos") setProductName("Ciudadanos");
-          else setProductName(parsed.product.charAt(0).toUpperCase() + parsed.product.slice(1));
-        }
-      } catch (error) {
-        console.error("Error loading master config in ProductSpecificNavigation:", error);
-      }
-    };
-    loadData();
-  }, []);
-
-  const resetToWelcome = async () => {
-    Alert.alert("Reiniciar", "¿Desea volver a la configuración inicial del producto?", [
-      { text: "Cancelar", style: "cancel" },
-      { 
-        text: "Sí, reiniciar", 
-        onPress: async () => {
-          onReset(false); 
-          
-          const specificKey = getStorageKey(productName.toLowerCase());
-          await AsyncStorage.removeItem(specificKey);
-          
-          try {
-            // await Updates.reloadAsync();
-          } catch (e) {
-            console.log("Reload abortado");
-          }
-        } 
-      }
-    ]);
-  };
-
-  const resetToMaster = async () => {
-    Alert.alert("Master Reset", "Esto borrará TODO y permitirá ingresar un nuevo código maestro.", [
-      { text: "Cancelar", style: "cancel" },
-      { 
-        text: "Sí, borrar todo", 
-        style: "destructive",
-        onPress: async () => {
-          onReset(true); 
-          
-          const specificKey = getStorageKey(productName.toLowerCase());
-          await AsyncStorage.removeItem(specificKey);
-          await AsyncStorage.removeItem("@master_config");
-          await AsyncStorage.removeItem("@master_token");
-          
-          try {
-            // await Updates.reloadAsync();
-          } catch (e) {
-            console.log("Reload abortado");
-          }
-        } 
-      }
-    ]);
-  };
-
-  return (
-    <BottomTabs.Navigator
-      screenListeners={multimediaTabGuard(deactivateMultimedia)}
-      screenOptions={{
-        headerStyle: { backgroundColor: 'white', height: 120 },
-        headerTintColor: '#222266',
-        headerTitleAlign: 'center',
-        tabBarHideOnKeyboard: true,
-      }}
-    >
-      <BottomTabs.Screen
-        name="ProductHome"
-        options={{
-          title: "",
-          tabBarLabel: "Home",
-          tabBarIcon: ({ color, size }) => (
-            <Ionicons name="home-outline" size={size} color={color} />
-          ),
-          headerTitle: productName,
-          headerTitleStyle: { fontSize: 24, fontWeight: 'bold' }
-        }}
-      >
-        {() => (
-          <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: '#F5F7FA' }}>
-            <Ionicons name="shield-checkmark-outline" size={100} color="#222266" />
-            <Text style={{ fontSize: 32, fontFamily: 'open-sans-bold', color: '#222266', marginTop: 20 }}>
-              {productName}
-            </Text>
-            <Text style={{ fontSize: 16, fontFamily: 'open-sans', color: '#666', marginTop: 10 }}>
-              Panel de Control Activo
-            </Text>
-            <TouchableOpacity 
-              onPress={activateMultimedia}
-              style={{ marginTop: 20, backgroundColor: '#E74C3C', padding: 10, borderRadius: 10 }}
-            >
-              <Text style={{ color: 'white' }}>SIMULAR PÁNICO (Activar Multimedia)</Text>
-            </TouchableOpacity>
-          </View>
-        )}
-      </BottomTabs.Screen>
-
-      {/* 📸 PESTAÑA MULTIMEDIA (Registrada pero oculta de la barra inferior) */}
-      <BottomTabs.Screen
-        name="Multimedia"
-        options={{
-          tabBarButton: () => null, // Ocultar de la barra inferior
-          headerTitle: productName,
-          headerTitleStyle: { fontSize: 24, fontWeight: 'bold' }
-        }}
-      >
-        {(props) => (
-          <Multimedia 
-            {...props} 
-            panicId={activePanicId}
-            resumeChat
-            chatSessionNonce={1}
-            onFinalize={deactivateMultimedia} 
-          />
-        )}
-      </BottomTabs.Screen>
-
-      <BottomTabs.Screen
-        name="User"
-        options={{
-          title: "",
-          tabBarLabel: "Sistema",
-          tabBarIcon: ({ color, size }) => (
-            <Ionicons name="settings-outline" size={size} color={color} />
-          ),
-          headerTitle: "Sistema",
-        }}
-      >
-        {() => (
-          <View style={{ flex: 1, padding: 30, justifyContent: 'center', backgroundColor: '#F5F7FA' }}>
-            <Text style={{ textAlign: 'center', marginBottom: 40, fontSize: 18, color: '#666', fontFamily: 'open-sans' }}>
-              Gestión de {productName}
-            </Text>
-
-            <TouchableOpacity 
-              onPress={resetToWelcome}
-              style={{ backgroundColor: '#EB7F27', padding: 18, borderRadius: 12, marginBottom: 20, elevation: 3 }}
-            >
-              <Text style={{ color: 'white', textAlign: 'center', fontWeight: 'bold', fontSize: 16 }}>
-                REINICIAR CONFIGURACIÓN (Ir a Welcome)
-              </Text>
-            </TouchableOpacity>
-
-            <TouchableOpacity 
-              onPress={resetToMaster}
-              style={{ backgroundColor: '#222266', padding: 18, borderRadius: 12, elevation: 3 }}
-            >
-              <Text style={{ color: 'white', textAlign: 'center', fontWeight: 'bold', fontSize: 16 }}>
-                CAMBIAR DE PRODUCTO (Ir a Master Code)
-              </Text>
-            </TouchableOpacity>
-            
-            <Text style={{ marginTop: 50, textAlign: 'center', color: '#AAA', fontSize: 12 }}>
-              Desit SA - Desarrollo Independiente
-            </Text>
-          </View>
-        )}
-      </BottomTabs.Screen>
-    </BottomTabs.Navigator>
-  );
-}
-
 function App() {
   const [fontsLoaded] = useFonts({
     "open-sans": require("./fonts/OpenSans-Regular.ttf"),
@@ -867,6 +654,10 @@ function App() {
   const [deepLinkCode, setDeepLinkCode] = useState(null);
 
   const handleActivated = (product, extraData = null) => {
+    if (!isSupportedProduct(product)) {
+      Alert.alert("Código inválido", "Este código no corresponde a Docta Comunitarias.");
+      return;
+    }
     setActiveProduct(product);
     setActivationData(extraData);
     setHasMasterCode(true);
@@ -1078,31 +869,38 @@ function App() {
         if (masterData !== null) {
           const parsedMaster = JSON.parse(masterData);
           activeProd = parsedMaster.product;
-          setHasMasterCode(true);
-          setActiveProduct(activeProd);
-          
-          // Reconstruir los datos de activación para la persistencia entre recargas
-          setActivationData({
-            initialStep: 2,
-            masterConfig: parsedMaster,
-            panicAppData: parsedMaster.panicAppData,
-            onboardingInfo: parsedMaster.onboardingInfo
-          });
 
-          // Verificamos la licencia específica de este producto
-          const specificKey = getStorageKey(activeProd);
-          const licenseData = await AsyncStorage.getItem(specificKey);
+          if (!isSupportedProduct(activeProd)) {
+            console.log("ℹ️ Código maestro de otro producto; esta app solo es Comunitarias/calle.");
+            setHasMasterCode(false);
+            setActiveProduct(null);
+          } else {
+            setHasMasterCode(true);
+            setActiveProduct(activeProd);
+            
+            // Reconstruir los datos de activación para la persistencia entre recargas
+            setActivationData({
+              initialStep: 2,
+              masterConfig: parsedMaster,
+              panicAppData: parsedMaster.panicAppData,
+              onboardingInfo: parsedMaster.onboardingInfo
+            });
 
-          if (licenseData !== null) {
-            setIsAuthorized(true);
-            if (activeProd === "docta_panico") {
-              await migrateExistingUsers(licenseData, activeProd);
+            // Verificamos la licencia específica de este producto
+            const specificKey = getStorageKey(activeProd);
+            const licenseData = await AsyncStorage.getItem(specificKey);
+
+            if (licenseData !== null) {
+              setIsAuthorized(true);
+              if (activeProd === "docta_panico") {
+                await migrateExistingUsers(licenseData, activeProd);
+              }
             }
-          }
 
-          const deletedFlag = await AsyncStorage.getItem(LICENSE_DELETED_KEY);
-          if (deletedFlag === "1") {
-            setLicenseDeleted(true);
+            const deletedFlag = await AsyncStorage.getItem(LICENSE_DELETED_KEY);
+            if (deletedFlag === "1") {
+              setLicenseDeleted(true);
+            }
           }
         } else {
           // CASO LEGACY: No hay master_config, buscamos la licencia original
@@ -1263,7 +1061,7 @@ function App() {
                 )}
               </Stack.Screen>
             ) : (
-              // Ya tiene código máster, todos van a la configuración (Welcome -> Configuration)
+              // Ya tiene código máster, va a Configuración (calle o Comunitarias)
               <Stack.Screen
                 name="Secondary"
                 options={{ 
@@ -1282,48 +1080,26 @@ function App() {
               </Stack.Screen>
             )
           ) : (
-            // FLUJO DE APP ACTIVA
-            (activeProduct === "docta_panico" || activeProduct === "docta_legacy" || activeProduct === "docta_comunitarias") ? (
-              <Stack.Screen
-                name="Principal"
-                options={{ headerShown: false }}
-              >
-                {(props) => (
-                  <AuthorizedNavigation
-                    {...props}
-                    activeProduct={activeProduct}
-                    pendingOpenChat={pendingOpenChat}
-                    onChatOpened={() => setPendingOpenChat(false)}
-                    showChatTab={showChatTab}
-                    chatUnread={chatUnread}
-                    onChatTabOpened={() => setChatUnread(false)}
-                    onChatTabClosed={() => {
-                      setShowChatTab(false);
-                      setChatUnread(false);
-                    }}
-                  />
-                )}
-              </Stack.Screen>
-            ) : (
-              // Nueva navegación para otros productos (Vigilantes, Ciudadanos, etc.)
-              <Stack.Screen 
-                name="ProductSpecific" 
-                options={{ headerShown: false }} 
-              >
-                {(props) => (
-                  <ProductSpecificNavigation 
-                    {...props} 
-                    onReset={(resetAll) => {
-                      setIsAuthorized(false);
-                      if (resetAll) {
-                        setHasMasterCode(false);
-                        setActiveProduct(null);
-                      }
-                    }}
-                  />
-                )}
-              </Stack.Screen>
-            )
+            <Stack.Screen
+              name="Principal"
+              options={{ headerShown: false }}
+            >
+              {(props) => (
+                <AuthorizedNavigation
+                  {...props}
+                  activeProduct={activeProduct}
+                  pendingOpenChat={pendingOpenChat}
+                  onChatOpened={() => setPendingOpenChat(false)}
+                  showChatTab={showChatTab}
+                  chatUnread={chatUnread}
+                  onChatTabOpened={() => setChatUnread(false)}
+                  onChatTabClosed={() => {
+                    setShowChatTab(false);
+                    setChatUnread(false);
+                  }}
+                />
+              )}
+            </Stack.Screen>
           )}
           
           {/* Pantallas comunes o modales */}

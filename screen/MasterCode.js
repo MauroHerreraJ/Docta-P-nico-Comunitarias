@@ -93,18 +93,22 @@ function MasterCode({ onActivated, navigation, initialCode }) {
       }
     }
 
-    // CASO 2: Formato Interno PRODUCTO-MUNICIPIO-EQUIPO (ej: COMU-0CBD-1005)
+    // CASO 2: Formato interno COMU-MUNICIPIO-EQUIPO (ej: COMU-0CBD-1005)
     const upperCode = cleanCode.toUpperCase();
     const parts = upperCode.split("-");
     
     if (parts.length === 3) {
-      const product = parts[0] === "COMU" ? "docta_panico" : parts[0].toLowerCase();
+      if (parts[0] !== "COMU") {
+        Alert.alert("Código inválido", "Este código no corresponde a Docta Comunitarias.");
+        return true;
+      }
+
+      const product = "docta_panico";
       const muniCode = parts[1];
       const equipment = parts[2];
 
       setLoading(true);
       try {
-        // Obtenemos los datos del municipio basados en el código corto
         const panicAppInfo = await getPanicAppByCode(muniCode);
         
         const masterData = {
@@ -118,7 +122,6 @@ function MasterCode({ onActivated, navigation, initialCode }) {
 
         await AsyncStorage.setItem("@master_config", JSON.stringify(masterData));
         
-        // Avisamos a App.js que el producto está activado
         Alert.alert("Éxito", "Código reconocido. Proceda a ingresar sus datos personales.", [
           { 
             text: "Continuar", 
@@ -153,16 +156,22 @@ function MasterCode({ onActivated, navigation, initialCode }) {
       const response = await activateMasterCode(code.trim());
       
       if (response.success) {
+        const product = response.product || "docta_panico";
+        if (product !== "docta_panico" && product !== "docta_comunitarias" && product !== "docta_legacy") {
+          Alert.alert("Código inválido", "Este código no corresponde a Docta Comunitarias.");
+          return;
+        }
+
         const masterData = {
-          product: response.product,
+          product,
           masterToken: response.masterToken,
           activatedAt: new Date().toISOString(),
         };
 
         await AsyncStorage.setItem("@master_config", JSON.stringify(masterData));
         
-        Alert.alert("Éxito", "Producto activado correctamente.", [
-          { text: "Continuar", onPress: () => onActivated(response.product) }
+        Alert.alert("Éxito", "Código activado correctamente.", [
+          { text: "Continuar", onPress: () => onActivated(product) }
         ]);
       } else {
         Alert.alert("Error", response.message || "Código inválido.");

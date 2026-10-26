@@ -1,35 +1,22 @@
-# Firebase y notificaciones push — Comunitarias / Vigiladores
+# Firebase y notificaciones push — Docta Comunitarias
 
-Documento para el equipo de Vigiladores y productos futuros de la misma app.
+Vigiladores **ya no vive en esta app**. Es un producto aparte (otro binario, otro package, otra ficha de store). Este documento queda para Comunitarias / calle y para no reutilizar la arquitectura vieja de “un solo APK, varios productos”.
 
-Última actualización: 7 de octubre de 2026.
+Última actualización: 23 de octubre de 2026.
 
 ---
 
 ## Decisión de arquitectura
 
-Docta Comunitarias, Vigiladores y los productos que se sumen viven **en el mismo binario**.
+Esta ficha de Play Store es **solo Docta Comunitarias** (actualiza la app de calle). Mismo package que hoy está publicado.
 
 | Pieza | Valor |
 |---|---|
 | Package Android | `com.pedrodarrigo.DesitAppV33` |
 | Bundle iOS | `com.pedrodarrigo.DesitAppV33` |
-| Proyecto Firebase | uno solo: `pushappcomunitarias` |
+| Proyecto Firebase | `pushappcomunitarias` |
 
-No hay que crear otro proyecto Firebase ni otra app Android por producto.
-
-Firebase identifica la app por el package, no por “Comunitarias” o “Vigiladores”. El backend distingue el producto por **usuario / licencia / código maestro**, no por package.
-
-### Por qué no es un problema
-
-- Una sola ficha en Play Store / App Store.
-- Un solo `google-services.json`.
-- Un token FCM por instalación de la app.
-- Escala a productos futuros sin reconfigurar Firebase.
-
-### Cuándo sí haría falta otro package
-
-Solo si se quisieran **dos apps instaladas a la vez** (por ejemplo un ícono “Docta Comunitarias” y otro “Docta Vigiladores”). Ese no es el caso.
+Vigi necesita **su propia app Android** (otro `applicationId` y su propio `google-services.json`, aunque el proyecto Firebase pueda ser el mismo o uno nuevo). No se elige producto con código maestro en este cliente.
 
 ---
 
@@ -68,29 +55,28 @@ Canal Android configurado en la app:
 - importancia: máxima
 - vibración activa
 
-El token es **de la instalación**, no del producto. Si el mismo celular pasa de Comunitarias a Vigiladores, hay que **volver a registrar el token** contra la licencia/usuario de Vigi. Si no, los eventos pueden quedar atados a la sesión anterior.
+El token FCM es **de esta instalación** (Comunitarias). No se comparte con Vigi: esa app tendrá el suyo.
 
 ---
 
-## Qué tiene que hacer el backend de Vigiladores
+## Vigiladores (app aparte)
 
-1. Usar el proyecto `pushappcomunitarias` (pedir acceso a quien lo administra).
+Vigi no debe reutilizar el package `com.pedrodarrigo.DesitAppV33` ni este `google-services.json`. Si el equipo de Vigi usa el mismo proyecto Firebase, hay que **registrar otra app Android** y generar otro archivo cliente.
+
+1. Pedir acceso a quien administra `pushappcomunitarias` (o usar un proyecto nuevo).
 2. Activar **Firebase Cloud Messaging API (V1)**.
-3. Crear una **cuenta de servicio**:
-   - Firebase Console → Configuración del proyecto → Cuentas de servicio → Generar nueva clave privada.
-   - El JSON resultante es **solo servidor**. No va en la app ni en el repo público.
-4. Guardar el `fcm_token` de cada dispositivo vinculado al usuario/licencia de Vigiladores.
-5. Al ocurrir un evento, enviar el push con **FCM HTTP v1** (no la API legacy / server key).
+3. Crear una **cuenta de servicio** de envío (JSON solo servidor).
+4. Guardar el `fcm_token` de cada dispositivo de la app Vigi.
+5. Enviar push con **FCM HTTP v1**.
 
-### Payload mínimo que la app ya entiende
+### Payload mínimo que Comunitarias ya entiende
 
 ```json
 {
-  "title": "Evento de vigilancia",
-  "body": "Texto que ve el vigilador",
+  "title": "Alarma",
+  "body": "La alarma de su zona se ha activado.",
   "data": {
-    "tipo": "evento",
-    "producto": "vigilantes"
+    "tipo": "evento"
   }
 }
 ```
@@ -103,13 +89,13 @@ Comportamiento actual del cliente (`App.js`):
 | `cambio_celular` | Se ignora |
 | cualquier otro (o sin tipo) | Modal de evento en primer plano |
 
-Conviene incluir siempre `producto: vigilantes` (u otro código de producto) para filtrar en el cliente más adelante.
+Este cliente **no filtra por producto**. Un push a este package llega a Comunitarias.
 
-### Qué no hace falta
+### Qué sí hace falta para Vigi
 
-- Nuevo proyecto Firebase
-- Nuevo package
-- Otro `google-services.json` para Vigi
+- Otro package / ficha de store
+- Otro `google-services.json` (otra app Firebase)
+- Registrar el token contra la licencia de Vigi, no contra la de Comunitarias
 
 ---
 
@@ -133,7 +119,7 @@ Cuando eso esté, el mismo contrato de `fcm_token` + payload puede usarse en iPh
 
 ## Accesos
 
-Quien administre `pushappcomunitarias` debe invitar al equipo de Vigiladores (rol Editor, o IAM equivalente para Cloud Messaging) para:
+Quien administre `pushappcomunitarias` puede invitar al equipo de Vigi (rol Editor, o IAM equivalente para Cloud Messaging) solo si comparten proyecto, para:
 
 - ver el proyecto
 - generar la cuenta de servicio de envío
@@ -151,5 +137,5 @@ App ID:       1:541814841492:android:050050190bc8072cb81481
 Consola:      https://console.firebase.google.com/project/pushappcomunitarias
 Token cliente: FCM nativo (fcm_token)
 Envío:        FCM HTTP v1 + cuenta de servicio
-Productos:    same package; distinguir por licencia / data.producto
+Productos:    Comunitarias = este package; Vigi = otra app
 ```
