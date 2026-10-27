@@ -6,6 +6,7 @@ import {
   Platform,
   Pressable,
   KeyboardAvoidingView,
+  Keyboard,
   TouchableOpacity,
   Modal,
   ScrollView,
@@ -14,7 +15,7 @@ import {
 import { useNavigation, useRoute } from "@react-navigation/native";
 import { StyleSheet } from "react-native";
 import { useState, useEffect } from "react";
-import { postUserData, postToken, getPanicAppByCode, validateCredentials, registerDevice, lookupOnboardingCode, registerOnboarding, recoverOnboarding, closeOtherDevices, buildDocta4LicenseCreated } from "../util/Api";
+import { postUserData, postToken, getPanicAppByCode, validateCredentials, registerDevice, lookupOnboardingCode, registerOnboarding, recoverOnboarding, closeOtherDevices, buildDocta4LicenseCreated, extractDocta4Role } from "../util/Api";
 import { extractOnboardingCode } from "../util/onboardingCode";
 import { registerForPushNotificationsAsync } from "../util/Notifications";
 import { MaterialIcons, Ionicons } from "@expo/vector-icons";
@@ -129,7 +130,22 @@ const TERMS_AND_CONDITIONS = {
   ]
 };
 
-function Configuration({ onAuthorized, activeProduct, initialData, initialOnboardingCode }) {
+function getFieldIcon(field) {
+  const name = String(field || "")
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "");
+
+  if (name.includes("vecino") || name.includes("nombre")) return "person";
+  if (name.includes("documento") || name.includes("dni") || name.includes("cuit")) return "badge";
+  if (name.includes("telefono") || name.includes("celular") || name.includes("phone")) return "phone";
+  if (name.includes("direccion") || name.includes("ubicacion") || name.includes("domicilio")) return "location-on";
+  if (name.includes("barrio")) return "home";
+  if (name.includes("mail") || name.includes("correo")) return "email";
+  return "edit";
+}
+
+function Configuration({ onAuthorized, activeProduct, initialData, initialOnboardingCode, onBackToCode }) {
   const { width, height } = Dimensions.get("window");
   const navigation = useNavigation();
   const route = useRoute();
@@ -372,9 +388,11 @@ function Configuration({ onAuthorized, activeProduct, initialData, initialOnboar
           masterConfig,
         });
         const storageKey = getStorageKey(activeProduct);
+        const rol = extractDocta4Role(licenseCreated, result, onboardingInfo, masterConfig);
+        console.log("Rol Docta 4 (alta):", rol);
         const storageData = {
           result: {
-            licenseCreated,
+            licenseCreated: { ...licenseCreated, rol },
           },
           token: {
             access_token: accessToken,
@@ -383,6 +401,7 @@ function Configuration({ onAuthorized, activeProduct, initialData, initialOnboar
           },
           panicAppData: result.municipality || onboardingInfo.municipality,
           profile: userProfile,
+          rol,
         };
 
         await AsyncStorage.setItem(storageKey, JSON.stringify(storageData));
@@ -392,14 +411,28 @@ function Configuration({ onAuthorized, activeProduct, initialData, initialOnboar
         await AsyncStorage.setItem("@master_config", JSON.stringify({
           ...parsedConfig,
           isDocta4: true,
+          rol,
           accountNumber: licenseCreated.accountNumber || parsedConfig.accountNumber,
           municipalityName: licenseCreated.municipalityName || parsedConfig.municipalityName,
+          ...(licenseCreated.municipalityId
+            ? { municipalityId: licenseCreated.municipalityId }
+            : {}),
           ...(licenseCreated.targetDeviceId
             ? { equipment: licenseCreated.targetDeviceId }
             : {}),
         }));
 
         console.log(`✅ Datos Docta 4 guardados en ${storageKey}:`, licenseCreated);
+
+        if (result?.pendiente_aprobacion || String(result?.verificacion || "").toLowerCase().includes("aprobacion")) {
+          await new Promise((resolve) => {
+            Alert.alert(
+              "Pendiente de aprobación",
+              result.mensaje || "El administrador del municipio tiene que aprobar este teléfono antes de usarlo.",
+              [{ text: "OK", onPress: resolve }]
+            );
+          });
+        }
 
         const otherPhones = Array.isArray(result.otros_telefonos) ? result.otros_telefonos : [];
         if (otherPhones.length > 0) {
@@ -641,7 +674,11 @@ console.log("¿Es accepted?:", result?.licenseCreated?.status === "accepted");
     }
   };
 
-  const previousStep = () => {
+  const previousStep = async () => {
+    if (typeof onBackToCode === "function") {
+      await onBackToCode();
+      return;
+    }
     if (currentStep > 1) setCurrentStep(currentStep - 1);
   };
 
@@ -755,7 +792,7 @@ console.log("¿Es accepted?:", result?.licenseCreated?.status === "accepted");
               <View style={styles.imputContainer}>
                 <View style={{ marginBottom: 20 }}>
                   <Text style={styles.titleText}>
-                    {onboardingInfo ? `Datos para ${onboardingInfo.municipality.name}` : "Datos Personales"}
+                    Ingrese sus datos Personales
                   </Text>
                 </View>
 
@@ -773,7 +810,7 @@ console.log("¿Es accepted?:", result?.licenseCreated?.status === "accepted");
                         value={userProfile[field]}
                       />
                       <MaterialIcons
-                        name={field.toLowerCase().includes("vecino") || field.toLowerCase().includes("nombre") ? "person" : "edit"}
+                        name={getFieldIcon(field)}
                         size={24}
                         color="#000"
                         style={styles.icon}
@@ -801,7 +838,7 @@ console.log("¿Es accepted?:", result?.licenseCreated?.status === "accepted");
                         onChangeText={(text) => handleChange("Documento", text)}
                         value={licencias.Documento}
                       />
-                      <MaterialIcons name="subtitles" size={24} color="#000" style={styles.icon} />
+                      <MaterialIcons name="badge" size={24} color="#000" style={styles.icon} />
                     </View>
                     <View style={styles.textContainer}>
                       <TextInput
@@ -819,7 +856,7 @@ console.log("¿Es accepted?:", result?.licenseCreated?.status === "accepted");
                         onChangeText={(text) => handleChange("Barrio", text)}
                         value={licencias.Barrio}
                       />
-                      <MaterialIcons name="location-on" size={24} color="#000" style={styles.icon} />
+                      <MaterialIcons name="home" size={24} color="#000" style={styles.icon} />
                     </View>
                   </>
                 )}
@@ -828,7 +865,10 @@ console.log("¿Es accepted?:", result?.licenseCreated?.status === "accepted");
                 <View style={[styles.termsContainer, { marginTop: 20, marginBottom: 10 }]}>
                   <TouchableOpacity
                     style={[styles.checkbox, isTermsAccepted && styles.checkboxChecked]}
-                    onPress={() => setIsTermsAccepted(!isTermsAccepted)}
+                    onPress={() => {
+                      Keyboard.dismiss();
+                      setIsTermsAccepted(!isTermsAccepted);
+                    }}
                   >
                     {isTermsAccepted && (
                       <MaterialIcons name="check" size={18} color="white" />
@@ -839,7 +879,10 @@ console.log("¿Es accepted?:", result?.licenseCreated?.status === "accepted");
                       Acepto los{" "}
                       <Text
                         style={styles.termsLink}
-                        onPress={() => setIsTermsModalVisible(true)}
+                        onPress={() => {
+                          Keyboard.dismiss();
+                          setIsTermsModalVisible(true);
+                        }}
                       >
                         Términos y condiciones de uso
                       </Text>
@@ -862,25 +905,8 @@ console.log("¿Es accepted?:", result?.licenseCreated?.status === "accepted");
           <ActivityIndicator size="large" color="#ffffff" />
         </View>
       ) : (
-        <>
+        <View style={styles.rootScreen}>
           <View>{renderStep()}</View>
-          {currentStep > 1 && (
-            <View style={styles.buttonContainer1}>
-              <TouchableOpacity
-                style={styles.buttonUpdate}
-                onPress={previousStep}
-                //disabled={!isContinueButtonEnabled}
-              >
-                <MaterialIcons
-                  name={"arrow-back"}
-                  size={24}
-                  color="#222266"
-                  style={[styles.icon, { marginLeft: 8 }]} // Aquí le agregamos un margen para separarlo un poco del texto
-                />
-                <Text style={styles.textImage}>ANTERIOR</Text>
-              </TouchableOpacity>
-            </View>
-          )}
           {currentStep < 2 ? (
             <View style={styles.buttonContainer1}>
               <TouchableOpacity
@@ -893,16 +919,25 @@ console.log("¿Es accepted?:", result?.licenseCreated?.status === "accepted");
                   name="arrow-forward"
                   size={24}
                   color="#222266"
-                  style={[styles.icon, { marginLeft: 8 }]} // Aquí le agregamos un margen para separarlo un poco del texto
+                  style={[styles.icon, { marginLeft: 8 }]}
                 />
               </TouchableOpacity>
             </View>
           ) : (
-            <View style={styles.button}>
-              <SaveButton onPress={saveData} isEnabled={isButtonEnabled} />
+            <View style={styles.stepActions}>
+              <TouchableOpacity
+                style={styles.backAction}
+                onPress={previousStep}
+              >
+                <MaterialIcons name="arrow-back" size={22} color="#222266" />
+                <Text style={styles.backActionText}>ANTERIOR</Text>
+              </TouchableOpacity>
+              <View style={styles.saveAction}>
+                <SaveButton onPress={saveData} isEnabled={isButtonEnabled} />
+              </View>
             </View>
           )}
-        </>
+        </View>
       )}
 
       {/* Modal de Términos y Condiciones */}
@@ -983,6 +1018,30 @@ const styles = StyleSheet.create({
   button: {
     marginTop: 1,
     alignSelf: "stretch",
+  },
+  stepActions: {
+    flexDirection: "row",
+    alignItems: "center",
+    marginTop: "auto",
+    paddingHorizontal: 12,
+    paddingTop: 12,
+    paddingBottom: 96,
+  },
+  backAction: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingVertical: 14,
+    paddingHorizontal: 8,
+    marginRight: 12,
+  },
+  backActionText: {
+    fontSize: 15,
+    color: "#222266",
+    marginLeft: 6,
+    fontFamily: "open-sans-bold",
+  },
+  saveAction: {
+    flex: 1,
   },
   imputContainer: {
     padding: 20,

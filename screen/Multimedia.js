@@ -689,18 +689,18 @@ function Multimedia({ onFinalize, panicId, chatWatermark = 0, chatSessionNonce =
             {images.map((uri, index) => (
               <View key={`img-${index}`} style={styles.thumbWrapper}>
                 <Image source={{ uri }} style={styles.thumb} />
-                <TouchableOpacity style={styles.removeThumb} onPress={() => removeImage(index)}>
-                  <Ionicons name="close-circle" size={20} color="#E74C3C" />
+                <TouchableOpacity style={styles.removeThumb} onPress={() => removeImage(index)} hitSlop={{ top: 8, right: 8, bottom: 8, left: 8 }}>
+                  <Ionicons name="close-circle" size={28} color="#E74C3C" />
                 </TouchableOpacity>
               </View>
             ))}
             {audioUri && (
               <View style={styles.thumbWrapper}>
                 <View style={[styles.thumb, styles.audioThumb]}>
-                  <Ionicons name="mic" size={30} color="#222266" />
+                  <Ionicons name="mic" size={36} color="#222266" />
                 </View>
-                <TouchableOpacity style={styles.removeThumb} onPress={() => setAudioUri(null)}>
-                  <Ionicons name="close-circle" size={20} color="#E74C3C" />
+                <TouchableOpacity style={styles.removeThumb} onPress={() => setAudioUri(null)} hitSlop={{ top: 8, right: 8, bottom: 8, left: 8 }}>
+                  <Ionicons name="close-circle" size={28} color="#E74C3C" />
                 </TouchableOpacity>
               </View>
             )}
@@ -921,11 +921,11 @@ const styles = StyleSheet.create({
     fontFamily: "open-sans",
   },
 
-  pendingAttachments: { backgroundColor: "white", padding: 10, borderTopWidth: 1, borderTopColor: "#EEE" },
-  thumbWrapper: { marginRight: 10, position: "relative" },
-  thumb: { width: 60, height: 60, borderRadius: 8 },
+  pendingAttachments: { backgroundColor: "white", padding: 12, borderTopWidth: 1, borderTopColor: "#EEE" },
+  thumbWrapper: { marginRight: 12, position: "relative" },
+  thumb: { width: 96, height: 96, borderRadius: 10 },
   audioThumb: { backgroundColor: "#DCF8C6", justifyContent: "center", alignItems: "center" },
-  removeThumb: { position: "absolute", top: -5, right: -5, backgroundColor: "white", borderRadius: 10 },
+  removeThumb: { position: "absolute", top: 2, right: 2, backgroundColor: "white", borderRadius: 14 },
 
   finalizeBtn: { padding: 15, backgroundColor: "white", alignItems: "center", borderTopWidth: 1, borderTopColor: "#DDD" },
   finalizeBtnText: { color: "#E74C3C", fontWeight: "bold", letterSpacing: 1 }

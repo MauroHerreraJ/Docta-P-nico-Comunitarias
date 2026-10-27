@@ -21,8 +21,12 @@ const X_DOCTA_APP_KEY = "SA7UMkePJLYwZuY34lc2qUaopm7POcXlJLUNyBjq";
 let unauthorizedCallback = null;
 let licenseDisabledCallback = null;
 let licenseDeletedCallback = null;
+let pendingApprovalCallback = null;
 
 export const LICENSE_DELETED_KEY = "@license_deleted";
+export const DEVICE_PENDING_KEY = "@device_pending_approval";
+export const DOCTA4_ROLE_BOTONERA = "botonera";
+export const DOCTA4_ROLE_MULTIMEDIA = "multimedia";
 
 export const onUnauthorized = (callback) => {
   unauthorizedCallback = callback;
@@ -34,6 +38,10 @@ export const onLicenseDisabled = (callback) => {
 
 export const onLicenseDeleted = (callback) => {
   licenseDeletedCallback = callback;
+};
+
+export const onPendingApproval = (callback) => {
+  pendingApprovalCallback = callback;
 };
 
 const getErrorData = (error) => {
@@ -80,9 +88,109 @@ export const isLicenseDeletedError = (error) => {
   return status === 410 && isDocta4;
 };
 
+const PENDING_APPROVAL_CODES = [
+  "PENDING_APPROVAL",
+  "LICENSE_PENDING",
+  "DEVICE_PENDING",
+  "PENDIENTE_APROBACION",
+];
+
+export const isPendingApprovalPayload = (data) => {
+  if (!data || typeof data !== "object") return false;
+  if (data.pendiente_aprobacion === true) return true;
+  const verification = String(data.verificacion || "").toLowerCase();
+  if (verification === "aprobacion" || verification === "aprobación") return true;
+  const code = String(data.code || data.error_code || "").toUpperCase();
+  if (PENDING_APPROVAL_CODES.includes(code)) return true;
+  const motivo = String(data.motivo || "").toLowerCase();
+  if (motivo.includes("pendiente") || motivo.includes("aprobacion") || motivo.includes("aprobación")) {
+    return true;
+  }
+  const text = `${data.message || ""} ${data.mensaje || ""} ${data.detail || ""}`.toLowerCase();
+  return text.includes("aprobar") || text.includes("aprobación") || text.includes("aprobacion");
+};
+
+export const isPendingApprovalError = (error) => isPendingApprovalPayload(getErrorData(error));
+
+export const markDevicePendingApproval = async (pending) => {
+  if (pending) {
+    await AsyncStorage.setItem(DEVICE_PENDING_KEY, "1");
+    return;
+  }
+  await AsyncStorage.removeItem(DEVICE_PENDING_KEY);
+};
+
+export const isDevicePendingApproval = async () => {
+  const value = await AsyncStorage.getItem(DEVICE_PENDING_KEY);
+  return value === "1";
+};
+
+export const normalizeDocta4Role = (value) => {
+  const rol = String(value || "").trim().toLowerCase();
+  return rol === DOCTA4_ROLE_MULTIMEDIA ? DOCTA4_ROLE_MULTIMEDIA : DOCTA4_ROLE_BOTONERA;
+};
+
+export const extractDocta4Role = (...sources) => {
+  for (const source of sources) {
+    if (!source || typeof source !== "object") continue;
+    const raw =
+      source.rol ??
+      source.role ??
+      source.license?.rol ??
+      source.license?.role ??
+      source.licenseCreated?.rol ??
+      source.result?.licenseCreated?.rol;
+    if (raw != null && String(raw).trim()) return normalizeDocta4Role(raw);
+  }
+  return DOCTA4_ROLE_BOTONERA;
+};
+
+const getLicenseStorageKey = (product) => {
+  if (!product || product === "docta_panico" || product === "docta_legacy") return "@licencias";
+  return `@licencias_${product}`;
+};
+
+export const persistDocta4Role = async (rol) => {
+  const normalized = normalizeDocta4Role(rol);
+  try {
+    const masterRaw = await AsyncStorage.getItem("@master_config");
+    const master = masterRaw ? JSON.parse(masterRaw) : {};
+    master.rol = normalized;
+    await AsyncStorage.setItem("@master_config", JSON.stringify(master));
+
+    const key = getLicenseStorageKey(master.product);
+    const licenseRaw = await AsyncStorage.getItem(key);
+    if (licenseRaw) {
+      const license = JSON.parse(licenseRaw);
+      license.rol = normalized;
+      if (license.result?.licenseCreated) {
+        license.result.licenseCreated.rol = normalized;
+      }
+      await AsyncStorage.setItem(key, JSON.stringify(license));
+    }
+  } catch (error) {
+    console.warn("No se pudo persistir el rol Docta 4:", error);
+  }
+  return normalized;
+};
+
+export const readDocta4Role = async () => {
+  try {
+    const masterRaw = await AsyncStorage.getItem("@master_config");
+    const master = masterRaw ? JSON.parse(masterRaw) : {};
+    const key = getLicenseStorageKey(master.product);
+    const licenseRaw = await AsyncStorage.getItem(key);
+    const license = licenseRaw ? JSON.parse(licenseRaw) : {};
+    return extractDocta4Role(license.result?.licenseCreated, license, master);
+  } catch (error) {
+    return DOCTA4_ROLE_BOTONERA;
+  }
+};
+
 export const clearDocta4LocalSession = async () => {
   await AsyncStorage.multiRemove([
     LICENSE_DELETED_KEY,
+    DEVICE_PENDING_KEY,
     "@device_token",
     "@master_token",
     "@device_id",
@@ -125,8 +233,19 @@ axios.interceptors.response.use(
       return Promise.reject(error);
     }
 
-    if (error.response?.status === 401) {
-      console.log("🔴 Sesión expirada o token inválido (401).");
+    const status = error.response?.status;
+    if (status === 401 || status === 403) {
+      const pendingStored = await isDevicePendingApproval();
+      if (isPendingApprovalError(error) || pendingStored) {
+        console.log("⏳ Dispositivo pendiente de aprobación. Se mantiene la sesión local.", error.response?.data);
+        await markDevicePendingApproval(true);
+        if (pendingApprovalCallback) pendingApprovalCallback();
+        return Promise.reject(error);
+      }
+    }
+
+    if (status === 401) {
+      console.log("🔴 Sesión expirada o token inválido (401).", error.response?.data);
       await AsyncStorage.removeItem("@device_token");
       await AsyncStorage.removeItem("@master_token");
       if (unauthorizedCallback) unauthorizedCallback();
@@ -224,6 +343,23 @@ const pickNonEmpty = (...values) => {
   return "";
 };
 
+export const pickMunicipalityId = (...sources) => {
+  for (const source of sources) {
+    if (!source || typeof source !== "object") continue;
+    const value = pickNonEmpty(
+      source.id,
+      source._id,
+      source.municipality_id,
+      source.municipalityId,
+      source.municipality?.id,
+      source.municipality?._id,
+      source.municipality?.municipality_id
+    );
+    if (value) return value;
+  }
+  return "";
+};
+
 const padNumericId = (value, size = 4) => {
   if (!value) return "";
   if (/^\d+$/.test(value) && value.length <= size) return value.padStart(size, "0");
@@ -259,6 +395,7 @@ export const buildDocta4LicenseCreated = ({
     municipality.name,
     municipality.nombre
   );
+  const municipalityId = pickMunicipalityId(municipality, license, result, onboardingInfo, masterConfig);
 
   const targetDeviceId = padNumericId(pickNonEmpty(
     license.deviceId,
@@ -278,7 +415,9 @@ export const buildDocta4LicenseCreated = ({
     code,
     accountNumber,
     municipalityName,
+    municipalityId,
     targetDeviceId,
+    rol: extractDocta4Role(license, result, onboardingInfo, masterConfig),
   };
 };
 
@@ -354,15 +493,26 @@ export const lookupOnboardingCode = async (code) => {
  * Registrar y crear la licencia (Sección 1b.2)
  */
 const finishDocta4Onboarding = async (responseData) => {
+  if (isPendingApprovalPayload(responseData)) {
+    await markDevicePendingApproval(true);
+  } else {
+    await markDevicePendingApproval(false);
+  }
+
   const accessToken = await persistDocta4Credential(responseData, { replaceLegacyLicense: true });
 
   const currentConfig = await AsyncStorage.getItem("@master_config");
   const parsedConfig = currentConfig ? JSON.parse(currentConfig) : {};
+  const rol = extractDocta4Role(responseData, parsedConfig);
+  const municipality = responseData?.municipality || parsedConfig.municipality;
+  const municipalityId = pickMunicipalityId(municipality, responseData, parsedConfig);
   await AsyncStorage.setItem("@master_config", JSON.stringify({
     ...parsedConfig,
     apiUrl: DOCTA4_BASE_URL,
     product: "docta_comunitarias",
-    municipality: responseData?.municipality || parsedConfig.municipality
+    municipality,
+    ...(municipalityId ? { municipalityId } : {}),
+    rol,
   }));
 
   return {
@@ -448,10 +598,15 @@ export const checkDeviceStatus = async ({ silent = false } = {}) => {
       },
       skipAuthHandler: silent,
     });
+    await markDevicePendingApproval(false);
     return response.data;
   } catch (error) {
-    if (error.response?.status === 401) {
-      console.log("Token de dispositivo expirado o inválido");
+    if (error.response?.status === 401 || error.response?.status === 403) {
+      if (isPendingApprovalError(error) || await isDevicePendingApproval()) {
+        console.log("Dispositivo pendiente de aprobación en /yo", error.response?.data);
+      } else {
+        console.log("Token de dispositivo expirado o inválido", error.response?.data);
+      }
     }
     throw error;
   }
@@ -464,58 +619,83 @@ export const sendPanicDocta4 = async (eventData) => {
   try {
     const api = await getEndpoints();
     const token = await getAuthToken();
-    
-    // Obtener datos del usuario y municipio del almacenamiento local si no vienen en eventData
-    let user = eventData.user || {};
-    let municipality = eventData.municipality || {};
+    const masterRaw = await AsyncStorage.getItem("@master_config");
+    const master = masterRaw ? JSON.parse(masterRaw) : {};
+    const storageKey = getLicenseStorageKey(master.product);
+    const storedLicencia = await AsyncStorage.getItem(storageKey);
+    const parsed = storedLicencia ? JSON.parse(storedLicencia) : {};
+    const licenseCreated = parsed.result?.licenseCreated || {};
+    const profile = parsed.profile || {};
+    const panicAppData = parsed.panicAppData || parsed.municipality || {};
 
-    if (Object.keys(user).length === 0 || Object.keys(municipality).length === 0) {
-      const masterData = await AsyncStorage.getItem("@master_config");
-      const activeProd = masterData ? JSON.parse(masterData).product : "docta_panico";
-      
-      let storageKey = "@licencias";
-      if (activeProd && activeProd !== "docta_panico" && activeProd !== "docta_legacy") {
-        storageKey = `@licencias_${activeProd}`;
-      }
-      
-      const storedLicencia = await AsyncStorage.getItem(storageKey);
-      if (storedLicencia) {
-        const parsed = JSON.parse(storedLicencia);
-        if (Object.keys(user).length === 0) {
-          // Intentar obtener datos del perfil de DOCTA 4 primero
-          user = {
-            Vecino: parsed.result?.licenseCreated?.Vecino || parsed.profile?.Nombre || "Usuario Docta",
-            Telefono: parsed.result?.licenseCreated?.Documento || parsed.profile?.Teléfono || ""
-          };
-        }
-        if (Object.keys(municipality).length === 0) {
-          municipality = parsed.panicAppData?.municipality || parsed.municipality || { id: "68ed14bacb9f182f98a06c28", name: "Default" };
-        }
-      }
+    let user = eventData.user || {};
+    if (Object.keys(user).length === 0) {
+      user = {
+        Vecino: licenseCreated.Vecino || profile.Nombre || profile.Vecino || "Usuario Docta",
+        Telefono: licenseCreated.Documento || profile.Teléfono || profile.Telefono || profile.Documento || "",
+      };
     }
 
-    const eventId = eventData.id || generateUUID();
+    const municipalitySource =
+      eventData.municipality && Object.keys(eventData.municipality).length > 0
+        ? eventData.municipality
+        : panicAppData.municipality || panicAppData;
 
-    const payload = {
-      event: {
-        id: eventId,
-        code: eventData.eventCode || eventData.code || "107", 
-        timestamp: new Date().toISOString(),
-        target_device: eventData.targetDeviceId || null,
-        location: eventData.location ? {
-          lat: eventData.location.lat,
-          lon: eventData.location.lng || eventData.location.lon,
-          precision_m: eventData.location.accuracy || eventData.location.precision_m || 10,
-          capturado_utc: eventData.location.timestamp || new Date().toISOString(),
-          origen: eventData.location.origen || "gps"
-        } : null
-      },
-      user,
-      municipality: {
-        id: municipality.id || "68ed14bacb9f182f98a06c28",
-        name: municipality.name || "Default"
-      }
+    const municipalityIdFromStorage = pickMunicipalityId(
+      eventData.municipality,
+      municipalitySource,
+      licenseCreated,
+      panicAppData,
+      parsed.municipality,
+      master.municipality,
+      master.onboardingInfo?.municipality,
+      master
+    );
+    // Prueba: mismo id que mandaba el cliente cuando el pánico andaba
+    // (doc Docta 4, 2026-09-14). Nunca enviar id vacío.
+    const DOCTA4_MUNICIPALITY_FALLBACK_ID = "68ed14bacb9f182f98a06c28";
+    const municipalityId = municipalityIdFromStorage || DOCTA4_MUNICIPALITY_FALLBACK_ID;
+
+    const targetDevice =
+      eventData.targetDeviceId ||
+      licenseCreated.targetDeviceId ||
+      licenseCreated.deviceId ||
+      master.equipment ||
+      null;
+
+    const eventId = eventData.id || generateUUID();
+    const event = {
+      id: eventId,
+      code: eventData.eventCode || eventData.code || "107",
+      timestamp: new Date().toISOString(),
+      target_device: targetDevice ? String(targetDevice) : null,
+      location: eventData.location ? {
+        lat: eventData.location.lat,
+        lon: eventData.location.lng || eventData.location.lon,
+        precision_m: eventData.location.accuracy || eventData.location.precision_m || 10,
+        capturado_utc: eventData.location.timestamp || new Date().toISOString(),
+        origen: eventData.location.origen || "gps",
+      } : null,
     };
+
+    const municipality = {
+      id: municipalityId,
+      name: pickNonEmpty(
+        municipalitySource.name,
+        municipalitySource.nombre,
+        licenseCreated.municipalityName,
+        master.municipalityName
+      ) || "Default",
+    };
+
+    const payload = { event, user, municipality };
+
+    console.log(
+      "Pánico Docta 4 municipality.id:",
+      municipalityId,
+      municipalityIdFromStorage ? "(del alta/lookup)" : "(fallback prueba 68ed14…)"
+    );
+    console.log("Enviando pánico a Docta 4:", JSON.stringify(payload));
 
     const response = await axios.post(api.panic, payload, {
       headers: { 
@@ -527,7 +707,12 @@ export const sendPanicDocta4 = async (eventData) => {
     
     return { ...response.data, event_id: eventId };
   } catch (error) {
-    console.error("Error enviando pánico a DOCTA 4:", error);
+    const body = error.response?.data;
+    console.error(
+      "Error enviando pánico a DOCTA 4:",
+      error.response?.status,
+      typeof body === "string" ? body : JSON.stringify(body) || error.message
+    );
     throw error;
   }
 };

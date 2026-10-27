@@ -28,7 +28,7 @@ import Configuration from "./screen/Configuration";
 import User from "./screen/User";
 import MasterCode from "./screen/MasterCode";
 import Multimedia from "./screen/Multimedia";
-import { getPanicAppByCode, registerNotificationToken, onUnauthorized, onLicenseDisabled, onLicenseDeleted, fetchChatMessages, checkDeviceStatus, isLicenseDisabledPayload, isLicenseDisabledError, isLicenseDeletedError, clearDocta4LocalSession, LICENSE_DELETED_KEY } from "./util/Api";
+import { getPanicAppByCode, registerNotificationToken, onUnauthorized, onLicenseDisabled, onLicenseDeleted, onPendingApproval, fetchChatMessages, checkDeviceStatus, isLicenseDisabledPayload, isLicenseDisabledError, isLicenseDeletedError, isPendingApprovalPayload, isPendingApprovalError, isDevicePendingApproval, markDevicePendingApproval, clearDocta4LocalSession, LICENSE_DELETED_KEY, extractDocta4Role, persistDocta4Role, readDocta4Role, DOCTA4_ROLE_MULTIMEDIA, DOCTA4_ROLE_BOTONERA } from "./util/Api";
 import { extractOnboardingCode } from "./util/onboardingCode";
 import { registerForPushNotificationsAsync } from "./util/Notifications";
 import * as Notifications from 'expo-notifications';
@@ -134,6 +134,27 @@ function LicenseDisabledModal({ visible, onAccept }) {
           <TouchableOpacity style={styles.closeButton} onPress={onAccept}>
             <Text style={styles.closeButtonText}>ACEPTAR</Text>
           </TouchableOpacity>
+        </View>
+      </View>
+    </Modal>
+  );
+}
+
+function PendingApprovalModal({ visible }) {
+  return (
+    <Modal
+      animationType="fade"
+      transparent={true}
+      visible={visible}
+      onRequestClose={() => {}}
+    >
+      <View style={styles.modalOverlay}>
+        <View style={styles.modalContent}>
+          <Ionicons name="time" size={80} color="#EB7F27" />
+          <Text style={styles.modalTitle}>Pendiente de aprobación</Text>
+          <Text style={styles.modalBody}>
+            El administrador del municipio tiene que aprobar este teléfono antes de usarlo.
+          </Text>
         </View>
       </View>
     </Modal>
@@ -346,7 +367,7 @@ function multimediaTabGuard(onFinalize) {
   });
 }
 
-function AuthorizedNavigation({ activeProduct, pendingOpenChat, onChatOpened, showChatTab, chatUnread, onChatTabOpened, onChatTabClosed }) {
+function AuthorizedNavigation({ activeProduct, pendingOpenChat, onChatOpened, showChatTab, chatUnread, onChatTabOpened, onChatTabClosed, canUseMultimedia = false }) {
   const [logoUrl, setLogoUrl] = useState("https://i.imgur.com/aIYhRsN.png");
   const [headerBgColor, setHeaderBgColor] = useState("white");
   const [headerTxtColor, setHeaderTxtColor] = useState("Black");
@@ -375,9 +396,8 @@ function AuthorizedNavigation({ activeProduct, pendingOpenChat, onChatOpened, sh
   };
 
   const activateMultimedia = (serverResult, options = {}) => {
-    // Si es un usuario Legacy (Desit Server), no habilitamos Multimedia
-    if (activeProduct === "docta_legacy") {
-      console.log("ℹ️ Multimedia no disponible para producto Legacy");
+    if (activeProduct === "docta_legacy" || !canUseMultimedia) {
+      console.log("ℹ️ Multimedia no disponible para este rol/producto");
       return;
     }
 
@@ -412,6 +432,12 @@ function AuthorizedNavigation({ activeProduct, pendingOpenChat, onChatOpened, sh
     deactivateMultimedia();
     if (typeof onChatTabClosed === "function") onChatTabClosed();
   };
+
+  useEffect(() => {
+    if (canUseMultimedia) return;
+    leaveChat();
+    tabNavRef.current?.navigate?.("Desit");
+  }, [canUseMultimedia]);
 
   useEffect(() => {
     const loadPanicAppData = async () => {
@@ -461,7 +487,7 @@ function AuthorizedNavigation({ activeProduct, pendingOpenChat, onChatOpened, sh
   }, []);
 
   useEffect(() => {
-    if (!pendingOpenChat || activeProduct === "docta_legacy") return;
+    if (!pendingOpenChat || !canUseMultimedia) return;
 
     activateMultimedia({ fromPush: true }, { keepOpen: true });
     let cancelled = false;
@@ -487,7 +513,7 @@ function AuthorizedNavigation({ activeProduct, pendingOpenChat, onChatOpened, sh
       cancelled = true;
       clearTimeout(timer);
     };
-  }, [pendingOpenChat, activeProduct]);
+  }, [pendingOpenChat, activeProduct, canUseMultimedia]);
 
   return (
     <BottomTabs.Navigator
@@ -531,12 +557,13 @@ function AuthorizedNavigation({ activeProduct, pendingOpenChat, onChatOpened, sh
             onPanicSuccess={activateMultimedia} 
             onPanicCancel={deactivateMultimedia} 
             externalPanicId={activePanicId}
+            canUseMultimedia={canUseMultimedia}
           />
         )}
       </BottomTabs.Screen>
 
       {/* Chat: oculto hasta un mensaje nuevo; al salir de Multimedia desaparece */}
-      {activeProduct !== "docta_legacy" && (
+      {canUseMultimedia && (
         <BottomTabs.Screen
           name="Multimedia"
           options={{
@@ -609,7 +636,7 @@ function AuthorizedNavigation({ activeProduct, pendingOpenChat, onChatOpened, sh
   );
 }
 
-function NoAuthorizedNavigation({ activeProduct, onAuthorized, activationData, initialOnboardingCode }) {
+function NoAuthorizedNavigation({ activeProduct, onAuthorized, activationData, initialOnboardingCode, onBackToCode }) {
   return (
     <BottomTabs.Navigator
       initialRouteName="Configuration"
@@ -633,6 +660,7 @@ function NoAuthorizedNavigation({ activeProduct, onAuthorized, activationData, i
             onAuthorized={onAuthorized}
             initialData={activationData}
             initialOnboardingCode={initialOnboardingCode}
+            onBackToCode={onBackToCode}
           />
         )}
       </BottomTabs.Screen>
@@ -662,6 +690,20 @@ function App() {
     setActivationData(extraData);
     setHasMasterCode(true);
   };
+
+  const handleBackToCode = async () => {
+    try {
+      await AsyncStorage.removeItem("@master_config");
+      await markDevicePendingApproval(false);
+    } catch (e) {
+      console.warn("No se pudo borrar @master_config:", e);
+    }
+    setDeepLinkCode(null);
+    setActivationData(null);
+    setActiveProduct(null);
+    setHasMasterCode(false);
+    setDeviceRole(DOCTA4_ROLE_BOTONERA);
+  };
   const [expoPushToken, setExpoPushToken] = useState('');
   const [notification, setNotification] = useState(false);
   const [showEventModal, setShowEventModal] = useState(false);
@@ -671,24 +713,44 @@ function App() {
   const [chatUnread, setChatUnread] = useState(false);
   const [licenseDisabled, setLicenseDisabled] = useState(false);
   const [licenseDeleted, setLicenseDeleted] = useState(false);
+  const [pendingApproval, setPendingApproval] = useState(false);
+  const [deviceRole, setDeviceRole] = useState(DOCTA4_ROLE_BOTONERA);
   const licenseDisabledDismissedRef = useRef(false);
+  const deviceRoleRef = useRef(DOCTA4_ROLE_BOTONERA);
+
+  useEffect(() => {
+    deviceRoleRef.current = deviceRole;
+  }, [deviceRole]);
+
+  const canUseMultimedia =
+    activeProduct !== "docta_legacy" && deviceRole === DOCTA4_ROLE_MULTIMEDIA;
 
   onUnauthorized(() => {
     console.log("⚠️ App detectó 401: Redirigiendo a configuración...");
     licenseDisabledDismissedRef.current = false;
     setLicenseDisabled(false);
+    setPendingApproval(false);
+    setDeviceRole(DOCTA4_ROLE_BOTONERA);
     setIsAuthorized(false);
   });
   onLicenseDisabled(() => {
     console.log("🚫 Licencia deshabilitada: se muestra aviso y se conserva la sesión.");
     licenseDisabledDismissedRef.current = false;
     setLicenseDeleted(false);
+    setPendingApproval(false);
     setLicenseDisabled(true);
   });
   onLicenseDeleted(() => {
     console.log("🗑️ Licencia dada de baja: se muestra aviso para volver a Master.");
     setLicenseDisabled(false);
+    setPendingApproval(false);
     setLicenseDeleted(true);
+  });
+  onPendingApproval(() => {
+    console.log("⏳ Teléfono pendiente de aprobación: se muestra aviso y se conserva la sesión.");
+    setLicenseDisabled(false);
+    setLicenseDeleted(false);
+    setPendingApproval(true);
   });
 
   const acceptLicenseDeleted = async () => {
@@ -733,6 +795,10 @@ function App() {
       const tipo = getNotificationTipo(content);
 
       if (isChatNotification(content)) {
+        if (deviceRoleRef.current !== DOCTA4_ROLE_MULTIMEDIA) {
+          console.log("Push de chat ignorado: rol botonera");
+          return;
+        }
         if (userTapped) {
           setShowEventModal(false);
           openChatFromPush();
@@ -840,108 +906,127 @@ function App() {
   }, []);
 
   useEffect(() => {
+    const LOCAL_ASSETS = [
+      require("./assets/logonuevo.png"),
+      require("./assets/126353.jpg"),
+      require("./assets/icon.png"),
+      require("./assets/adaptive-icon.png"),
+      require("./assets/splash-icon.png"),
+      require("./assets/botonpanico.png"),
+      require("./assets/cba-logo2.png"),
+      require("./assets/cba-logo3.png"),
+      require("./assets/civico.jpg"),
+      require("./assets/logo_villamaria.png"),
+      require("./assets/puenteVillaMaria.jpg"),
+      require("./assets/favicon.png"),
+    ];
+
+    async function restoreSession() {
+      const masterData = await AsyncStorage.getItem("@master_config");
+      if (masterData !== null) {
+        const parsedMaster = JSON.parse(masterData);
+        const activeProd = parsedMaster.product;
+
+        if (!isSupportedProduct(activeProd)) {
+          console.log("ℹ️ Código maestro de otro producto; esta app solo es Comunitarias/calle.");
+          setHasMasterCode(false);
+          setActiveProduct(null);
+          return { authorized: false, activeProd: null, licenseData: null };
+        }
+
+        setHasMasterCode(true);
+        setActiveProduct(activeProd);
+        setActivationData({
+          initialStep: 2,
+          masterConfig: parsedMaster,
+          panicAppData: parsedMaster.panicAppData,
+          onboardingInfo: parsedMaster.onboardingInfo
+        });
+
+        const licenseData = await AsyncStorage.getItem(getStorageKey(activeProd));
+        if (licenseData !== null) {
+          const parsedLicense = JSON.parse(licenseData);
+          setDeviceRole(extractDocta4Role(parsedLicense.result?.licenseCreated, parsedLicense, parsedMaster));
+          setIsAuthorized(true);
+        } else {
+          setDeviceRole(extractDocta4Role(parsedMaster));
+        }
+
+        const deletedFlag = await AsyncStorage.getItem(LICENSE_DELETED_KEY);
+        if (deletedFlag === "1") {
+          setLicenseDeleted(true);
+        }
+        if (await isDevicePendingApproval()) {
+          setPendingApproval(true);
+        }
+
+        return {
+          authorized: licenseData !== null,
+          activeProd,
+          licenseData,
+        };
+      }
+
+      const legacyData = await AsyncStorage.getItem("@licencias");
+      if (legacyData !== null) {
+        setIsAuthorized(true);
+        setActiveProduct("docta_legacy");
+        return { authorized: true, activeProd: "docta_legacy", licenseData: legacyData };
+      }
+
+      setHasMasterCode(false);
+      setActiveProduct(null);
+      return { authorized: false, activeProd: null, licenseData: null };
+    }
+
+    async function readLaunchCodes({ skipReferrer }) {
+      try {
+        const initialUrl = await Linking.getInitialURL();
+        const codeFromLink = extractOnboardingCode(initialUrl);
+        if (codeFromLink) {
+          console.log("✅ Código extraído de App Link inicial:", codeFromLink);
+          setDeepLinkCode(codeFromLink);
+          return;
+        }
+        if (skipReferrer || Platform.OS !== "android") return;
+
+        const referrerChecked = await AsyncStorage.getItem("@install_referrer_checked");
+        if (referrerChecked) return;
+        try {
+          const referrer = await Application.getInstallReferrerAsync();
+          console.log("📦 Install Referrer de Play:", referrer);
+          const codeFromReferrer = extractOnboardingCode(referrer);
+          if (codeFromReferrer) {
+            console.log("✅ Código extraído de Install Referrer:", codeFromReferrer);
+            setDeepLinkCode(codeFromReferrer);
+          }
+        } catch (refError) {
+          console.warn("No se pudo leer Install Referrer:", refError?.message || refError);
+        }
+        await AsyncStorage.setItem("@install_referrer_checked", "1");
+      } catch (linkError) {
+        console.warn("Error leyendo App Link / Referrer:", linkError);
+      }
+    }
+
     async function prepare() {
       try {
-        // Precargar todos los assets locales (imágenes)
-        console.log("🖼️ Precargando assets locales...");
-        await Asset.loadAsync([
-          require("./assets/logonuevo.png"),
-          require("./assets/126353.jpg"),
-          require("./assets/icon.png"),
-          require("./assets/adaptive-icon.png"),
-          require("./assets/splash-icon.png"),
-          require("./assets/botonpanico.png"),
-          require("./assets/cba-logo2.png"),
-          require("./assets/cba-logo3.png"),
-          require("./assets/civico.jpg"),
-          require("./assets/logo_villamaria.png"),
-          require("./assets/puenteVillaMaria.jpg"),
-          require("./assets/favicon.png"),
-        ]);
-        console.log("✅ Assets locales precargados exitosamente");
-        
-        // Preload fonts or any other task
-        await new Promise((resolve) => setTimeout(resolve, 2000));
-        
-        const masterData = await AsyncStorage.getItem("@master_config");
-        let activeProd = null;
+        const session = await restoreSession();
 
-        if (masterData !== null) {
-          const parsedMaster = JSON.parse(masterData);
-          activeProd = parsedMaster.product;
-
-          if (!isSupportedProduct(activeProd)) {
-            console.log("ℹ️ Código maestro de otro producto; esta app solo es Comunitarias/calle.");
-            setHasMasterCode(false);
-            setActiveProduct(null);
-          } else {
-            setHasMasterCode(true);
-            setActiveProduct(activeProd);
-            
-            // Reconstruir los datos de activación para la persistencia entre recargas
-            setActivationData({
-              initialStep: 2,
-              masterConfig: parsedMaster,
-              panicAppData: parsedMaster.panicAppData,
-              onboardingInfo: parsedMaster.onboardingInfo
-            });
-
-            // Verificamos la licencia específica de este producto
-            const specificKey = getStorageKey(activeProd);
-            const licenseData = await AsyncStorage.getItem(specificKey);
-
-            if (licenseData !== null) {
-              setIsAuthorized(true);
-              if (activeProd === "docta_panico") {
-                await migrateExistingUsers(licenseData, activeProd);
-              }
-            }
-
-            const deletedFlag = await AsyncStorage.getItem(LICENSE_DELETED_KEY);
-            if (deletedFlag === "1") {
-              setLicenseDeleted(true);
-            }
+        if (session.authorized) {
+          Asset.loadAsync(LOCAL_ASSETS).catch(() => {});
+          if (session.licenseData && (session.activeProd === "docta_panico" || session.activeProd === "docta_legacy")) {
+            migrateExistingUsers(session.licenseData, session.activeProd).catch(() => {});
           }
         } else {
-          // CASO LEGACY: No hay master_config, buscamos la licencia original
-          const legacyData = await AsyncStorage.getItem("@licencias");
-          if (legacyData !== null) {
-            setIsAuthorized(true);
-            setActiveProduct("docta_legacy"); // Identificado como Producto Legacy
-            await migrateExistingUsers(legacyData, "docta_legacy");
-          } else {
-            setHasMasterCode(false);
-            setActiveProduct(null);
+          try {
+            await Asset.loadAsync(LOCAL_ASSETS);
+          } catch (assetError) {
+            console.warn("No se pudieron precargar assets:", assetError);
           }
         }
 
-        // App Link de arranque (app cerrada) + Install Referrer de Play (primera instalación)
-        try {
-          const initialUrl = await Linking.getInitialURL();
-          const codeFromLink = extractOnboardingCode(initialUrl);
-          if (codeFromLink) {
-            console.log("✅ Código extraído de App Link inicial:", codeFromLink);
-            setDeepLinkCode(codeFromLink);
-          } else if (Platform.OS === "android") {
-            const referrerChecked = await AsyncStorage.getItem("@install_referrer_checked");
-            if (!referrerChecked) {
-              try {
-                const referrer = await Application.getInstallReferrerAsync();
-                console.log("📦 Install Referrer de Play:", referrer);
-                const codeFromReferrer = extractOnboardingCode(referrer);
-                if (codeFromReferrer) {
-                  console.log("✅ Código extraído de Install Referrer:", codeFromReferrer);
-                  setDeepLinkCode(codeFromReferrer);
-                }
-              } catch (refError) {
-                console.warn("No se pudo leer Install Referrer:", refError?.message || refError);
-              }
-              await AsyncStorage.setItem("@install_referrer_checked", "1");
-            }
-          }
-        } catch (linkError) {
-          console.warn("Error leyendo App Link / Referrer:", linkError);
-        }
+        await readLaunchCodes({ skipReferrer: session.authorized });
       } catch (e) {
         console.warn("❌ Error durante la preparación:", e);
       } finally {
@@ -961,17 +1046,34 @@ function App() {
       try {
         const data = await checkDeviceStatus({ silent: true });
         if (cancelled) return;
-        if (isLicenseDisabledPayload(data)) {
+        if (isPendingApprovalPayload(data)) {
+          await markDevicePendingApproval(true);
+          setPendingApproval(true);
+        } else if (isLicenseDisabledPayload(data)) {
           if (!licenseDisabledDismissedRef.current) setLicenseDisabled(true);
         } else {
           licenseDisabledDismissedRef.current = false;
           if (licenseDisabled) setLicenseDisabled(false);
+          await markDevicePendingApproval(false);
+          if (pendingApproval) setPendingApproval(false);
+          const rawRol = data?.rol ?? data?.role ?? data?.license?.rol;
+          if (rawRol != null && String(rawRol).trim()) {
+            const nextRole = extractDocta4Role(data);
+            await persistDocta4Role(nextRole);
+            setDeviceRole(nextRole);
+            if (nextRole !== DOCTA4_ROLE_MULTIMEDIA) {
+              setShowChatTab(false);
+              setPendingOpenChat(false);
+              setChatUnread(false);
+            }
+          }
         }
       } catch (error) {
         if (cancelled) return;
         if (isLicenseDeletedError(error)) {
           licenseDisabledDismissedRef.current = false;
           setLicenseDisabled(false);
+          setPendingApproval(false);
           setLicenseDeleted(true);
           try {
             await AsyncStorage.setItem(LICENSE_DELETED_KEY, "1");
@@ -979,13 +1081,19 @@ function App() {
           return;
         }
         if (isLicenseDisabledError(error) && !licenseDisabledDismissedRef.current) {
+          setPendingApproval(false);
           setLicenseDisabled(true);
+          return;
+        }
+        if (isPendingApprovalError(error) || await isDevicePendingApproval()) {
+          await markDevicePendingApproval(true);
+          setPendingApproval(true);
         }
       }
     };
 
     verifyLicense();
-    const intervalMs = licenseDisabled ? 8000 : 30000;
+    const intervalMs = licenseDisabled || pendingApproval ? 8000 : 30000;
     const intervalId = setInterval(verifyLicense, intervalMs);
     const appStateSub = AppState.addEventListener("change", (next) => {
       if (next === "active") verifyLicense();
@@ -996,7 +1104,7 @@ function App() {
       clearInterval(intervalId);
       appStateSub.remove();
     };
-  }, [isAuthorized, activeProduct, licenseDisabled]);
+  }, [isAuthorized, activeProduct, licenseDisabled, pendingApproval]);
 
   useEffect(() => {
     const handleDeepLink = (url) => {
@@ -1074,7 +1182,11 @@ function App() {
                     activeProduct={activeProduct}
                     activationData={activationData}
                     initialOnboardingCode={deepLinkCode}
-                    onAuthorized={() => setIsAuthorized(true)}
+                    onAuthorized={async () => {
+                      setDeviceRole(await readDocta4Role());
+                      setIsAuthorized(true);
+                    }}
+                    onBackToCode={handleBackToCode}
                   />
                 )}
               </Stack.Screen>
@@ -1092,6 +1204,7 @@ function App() {
                   onChatOpened={() => setPendingOpenChat(false)}
                   showChatTab={showChatTab}
                   chatUnread={chatUnread}
+                  canUseMultimedia={canUseMultimedia}
                   onChatTabOpened={() => setChatUnread(false)}
                   onChatTabClosed={() => {
                     setShowChatTab(false);
@@ -1115,6 +1228,7 @@ function App() {
           />
         </Stack.Navigator>
       </NavigationContainer>
+      <PendingApprovalModal visible={pendingApproval && !licenseDisabled && !licenseDeleted} />
       <LicenseDisabledModal
         visible={licenseDisabled && !licenseDeleted}
         onAccept={dismissLicenseDisabled}

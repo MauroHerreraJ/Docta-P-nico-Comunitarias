@@ -96,11 +96,11 @@ function User({ navigation, activeProduct }) {
     loadLicencia();
   }, []);
 
-  const Borrar = async () => {
+  const resetLocalSession = async () => {
     const specificKey = getStorageKey(activeProduct);
+    await clearDocta4LocalSession();
     await AsyncStorage.removeItem(specificKey);
     setLicencia(null);
-    console.log(`Borrado de ${specificKey}`);
   };
 
   const handleAdminDelete = () => {
@@ -122,7 +122,7 @@ function User({ navigation, activeProduct }) {
 
   const confirmAdminDelete = async () => {
     if (adminPasswordInput === "253614") {
-      await Borrar();
+      await resetLocalSession();
       setIsAdminModalVisible(false);
       Alert.alert("Éxito", "La configuración local ha sido reseteada.", [
         { 
@@ -141,35 +141,6 @@ function User({ navigation, activeProduct }) {
     } else {
       Alert.alert("Error", "Clave incorrecta.");
     }
-  };
-
-  const handleProductChange = async () => {
-    Alert.alert(
-      "Cambio de Producto",
-      "Esto eliminará TODA la configuración, incluyendo el código maestro. ¿Desea continuar?",
-      [
-        { text: "Cancelar", style: "cancel" },
-        { 
-          text: "Sí, resetear todo", 
-          style: "destructive",
-          onPress: async () => {
-            // Borrado selectivo para no afectar claves de sistema de Expo
-            const specificKey = getStorageKey(activeProduct);
-            await AsyncStorage.removeItem(specificKey);
-            await AsyncStorage.removeItem("@master_config");
-            await AsyncStorage.removeItem("@master_token");
-            
-            setTimeout(async () => {
-              try {
-                await Updates.reloadAsync();
-              } catch (e) {
-                console.warn("reloadAsync falló en desarrollo");
-              }
-            }, 500);
-          } 
-        }
-      ]
-    );
   };
 
   //Verifica si hay datos de licencia para mostrar
@@ -196,6 +167,45 @@ function User({ navigation, activeProduct }) {
             </Text>
           </TouchableOpacity>
         </ScrollView>
+
+        <Modal
+          visible={isAdminModalVisible}
+          transparent={true}
+          animationType="slide"
+          onRequestClose={() => setIsAdminModalVisible(false)}
+        >
+          <View style={styles.modalOverlay}>
+            <View style={styles.validationModalContent}>
+              <Text style={styles.modalTitle}>Acceso Administrador</Text>
+              <Text style={styles.modalSubtitle}>
+                Ingrese la clave de seguridad para resetear la configuración:
+              </Text>
+              <TextInput
+                style={styles.licenseInput}
+                value={adminPasswordInput}
+                onChangeText={setAdminPasswordInput}
+                keyboardType="numeric"
+                secureTextEntry={true}
+                placeholder="******"
+                placeholderTextColor="#999"
+              />
+              <View style={styles.modalButtonContainer}>
+                <TouchableOpacity
+                  style={[styles.modalButton, styles.cancelButton]}
+                  onPress={() => setIsAdminModalVisible(false)}
+                >
+                  <Text style={styles.modalButtonText}>Cancelar</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={[styles.modalButton, styles.confirmButton]}
+                  onPress={confirmAdminDelete}
+                >
+                  <Text style={styles.modalButtonText}>Confirmar</Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+          </View>
+        </Modal>
       </>
     );
   }
@@ -399,7 +409,7 @@ function User({ navigation, activeProduct }) {
           </View>
         </View>
       </Modal>
-      
+
       {/* Modal de Acceso Administrativo */}
       <Modal
         visible={isAdminModalVisible}
@@ -439,13 +449,6 @@ function User({ navigation, activeProduct }) {
                 <Text style={styles.modalButtonText}>Confirmar</Text>
               </TouchableOpacity>
             </View>
-
-            <TouchableOpacity 
-              style={[styles.changeProductButton, { marginTop: 20 }]} 
-              onPress={handleProductChange}
-            >
-              <Text style={styles.changeProductButtonText}>Cambiar de Producto (Master Reset)</Text>
-            </TouchableOpacity>
           </View>
         </View>
       </Modal>
@@ -623,20 +626,5 @@ const styles = StyleSheet.create({
     color: 'white',
     fontSize: 16,
     fontFamily: 'open-sans-bold',
-  },
-  changeProductButton: {
-    backgroundColor: '#222266',
-    width: '100%',
-    height: 45,
-    borderRadius: 8,
-    justifyContent: 'center',
-    alignItems: 'center',
-    paddingHorizontal: 10,
-  },
-  changeProductButtonText: {
-    color: 'white',
-    fontSize: 14,
-    fontFamily: 'open-sans-bold',
-    textAlign: 'center',
   },
 });

@@ -13,12 +13,14 @@ import {
   Modal,
 } from "react-native";
 import AsyncStorage from "@react-native-async-storage/async-storage";
-import { activateMasterCode, getPanicAppByCode, lookupOnboardingCode } from "../util/Api";
+import { activateMasterCode, getPanicAppByCode, lookupOnboardingCode, extractDocta4Role } from "../util/Api";
 import { extractOnboardingCode } from "../util/onboardingCode";
 import { Ionicons, MaterialIcons } from "@expo/vector-icons";
 import { CameraView, useCameraPermissions } from 'expo-camera';
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 function MasterCode({ onActivated, navigation, initialCode }) {
+  const insets = useSafeAreaInsets();
   const [code, setCode] = useState("");
   const [loading, setLoading] = useState(false);
   const [showManualInput, setShowManualInput] = useState(false);
@@ -36,51 +38,66 @@ function MasterCode({ onActivated, navigation, initialCode }) {
     }
   }, [initialCode]);
 
+  const stayOnCodeScreen = () => {
+    setLoading(false);
+    setIsScannerVisible(false);
+    setShowManualInput(false);
+  };
+
+  const proceedToConfiguration = async (activate) => {
+    setShowManualInput(false);
+    await new Promise((resolve) => setTimeout(resolve, 450));
+    activate();
+  };
+
   const processMasterCode = async (inputCode, options = {}) => {
     console.log("Processing code:", inputCode);
     const cleanCode = String(inputCode || "").trim();
     const digitsOnly = extractOnboardingCode(cleanCode);
-    
+
+    setLoading(true);
+
     // CASO 1: Alias de 7 dígitos (Docta 4 Onboarding) — número o link /q/
     if (digitsOnly && digitsOnly.length === 7) {
-      setLoading(true);
       try {
         console.log("Iniciando lookup para alias Docta 4:", digitsOnly);
         const result = await lookupOnboardingCode(digitsOnly);
         
         if (result.canRegister) {
           const municipality = result.municipality || {};
+          const municipalityId = municipality.id || municipality._id || municipality.municipality_id || "";
+          const rol = extractDocta4Role(result);
+          console.log("Rol Docta 4 (lookup):", rol, result.rol || result.role || "(no vino)");
+          console.log("Municipio lookup:", municipalityId || "(sin id)", municipality.name || municipality.nombre || "");
           const masterData = {
             product: "docta_comunitarias",
             muniCode: municipality.code || municipality.panicAppCode || municipality.shortCode || digitsOnly,
             equipment: result.equipment || result.target_device_id || result.targetDeviceId || municipality.equipment || municipality.target_device_id || "",
             isDocta4: true,
+            rol,
+            municipality,
+            ...(municipalityId ? { municipalityId } : {}),
             onboardingInfo: result,
             activatedAt: new Date().toISOString()
           };
           
           await AsyncStorage.setItem("@master_config", JSON.stringify(masterData));
-
-          const goToRegister = () => onActivated("docta_comunitarias", { 
-            initialStep: 2,
-            masterConfig: masterData,
-            onboardingInfo: result
-          });
-
-          if (options.silent) {
-            goToRegister();
-          } else {
-            Alert.alert("Éxito", `Código reconocido para ${result.municipality.name}.`, [
-              { text: "Continuar", onPress: goToRegister }
-            ]);
-          }
-          return true;
-        } else {
-          Alert.alert("Sin cupo", result.detail || "No quedan licencias en este equipo.");
+          await proceedToConfiguration(() =>
+            onActivated("docta_comunitarias", { 
+              initialStep: 2,
+              masterConfig: masterData,
+              onboardingInfo: result
+            })
+          );
           return true;
         }
+
+        stayOnCodeScreen();
+        Alert.alert("Sin cupo", result.detail || "No quedan licencias en este equipo.");
+        return true;
       } catch (error) {
         console.error("Error en lookup de alias:", error);
+        stayOnCodeScreen();
         const status = error.response?.status;
         if (status === 404) {
           Alert.alert("Error", "Código incorrecto, revise el sticker.");
@@ -88,8 +105,6 @@ function MasterCode({ onActivated, navigation, initialCode }) {
           Alert.alert("Error", "No se pudo validar el código. Verifique su conexión.");
         }
         return true;
-      } finally {
-        setLoading(false);
       }
     }
 
@@ -99,6 +114,7 @@ function MasterCode({ onActivated, navigation, initialCode }) {
     
     if (parts.length === 3) {
       if (parts[0] !== "COMU") {
+        stayOnCodeScreen();
         Alert.alert("Código inválido", "Este código no corresponde a Docta Comunitarias.");
         return true;
       }
@@ -107,7 +123,6 @@ function MasterCode({ onActivated, navigation, initialCode }) {
       const muniCode = parts[1];
       const equipment = parts[2];
 
-      setLoading(true);
       try {
         const panicAppInfo = await getPanicAppByCode(muniCode);
         
@@ -121,24 +136,22 @@ function MasterCode({ onActivated, navigation, initialCode }) {
         };
 
         await AsyncStorage.setItem("@master_config", JSON.stringify(masterData));
-        
-        Alert.alert("Éxito", "Código reconocido. Proceda a ingresar sus datos personales.", [
-          { 
-            text: "Continuar", 
-            onPress: () => onActivated(product, { 
-              initialStep: 2,
-              masterConfig: masterData,
-              panicAppData: panicAppInfo
-            }) 
-          }
-        ]);
+        await proceedToConfiguration(() =>
+          onActivated(product, { 
+            initialStep: 2,
+            masterConfig: masterData,
+            panicAppData: panicAppInfo
+          })
+        );
+        return true;
       } catch (error) {
+        stayOnCodeScreen();
         Alert.alert("Error", "No se pudo validar el municipio del código maestro.");
-      } finally {
-        setLoading(false);
+        return true;
       }
-      return true;
     }
+
+    setLoading(false);
     return false;
   };
 
@@ -158,6 +171,7 @@ function MasterCode({ onActivated, navigation, initialCode }) {
       if (response.success) {
         const product = response.product || "docta_panico";
         if (product !== "docta_panico" && product !== "docta_comunitarias" && product !== "docta_legacy") {
+          stayOnCodeScreen();
           Alert.alert("Código inválido", "Este código no corresponde a Docta Comunitarias.");
           return;
         }
@@ -169,28 +183,25 @@ function MasterCode({ onActivated, navigation, initialCode }) {
         };
 
         await AsyncStorage.setItem("@master_config", JSON.stringify(masterData));
-        
-        Alert.alert("Éxito", "Código activado correctamente.", [
-          { text: "Continuar", onPress: () => onActivated(product) }
-        ]);
+        await proceedToConfiguration(() => onActivated(product));
       } else {
+        stayOnCodeScreen();
         Alert.alert("Error", response.message || "Código inválido.");
       }
     } catch (error) {
       console.error("Error activating master code:", error);
+      stayOnCodeScreen();
       Alert.alert("Error", "No se pudo validar el código. Verifique su conexión.");
-    } finally {
-      setLoading(false);
     }
   };
 
   const handleBarCodeScanned = ({ data }) => {
     if (scanned) return;
     setScanned(true);
-    setIsScannerVisible(false);
-    
+
     processMasterCode(data).then(processed => {
       if (!processed) {
+        setIsScannerVisible(false);
         Alert.alert("Error", "El código QR no tiene un formato válido.");
       }
       setScanned(false);
@@ -202,14 +213,17 @@ function MasterCode({ onActivated, navigation, initialCode }) {
       behavior={Platform.OS === "ios" ? "padding" : "height"}
       style={styles.container}
     >
+      <Text style={[styles.title, { paddingTop: insets.top + 40 }]}>
+        Bienvenido!
+      </Text>
       <View style={styles.content}>
         <Image
           source={require("../assets/logonuevo.png")}
           style={styles.logo}
           resizeMode="contain"
         />
-        
-        <Text style={styles.title}>Bienvenido a Docta</Text>
+        <Text style={styles.productName}>Docta Comunitarias</Text>
+
         <Text style={styles.subtitle}>
           Para comenzar, escanee el código QR del sticker o ingrese el código de 7 dígitos.
         </Text>
@@ -331,6 +345,23 @@ function MasterCode({ onActivated, navigation, initialCode }) {
             <View style={styles.scannerFocusFrame} />
             <Text style={styles.scannerText}>Enfoque el código QR de activación</Text>
           </View>
+          {loading && (
+            <View style={styles.scannerLoading}>
+              <ActivityIndicator size="large" color="white" />
+            </View>
+          )}
+        </View>
+      </Modal>
+
+      <Modal
+        visible={loading}
+        transparent
+        animationType="fade"
+        statusBarTranslucent
+        onRequestClose={() => {}}
+      >
+        <View style={styles.loadingOverlay}>
+          <ActivityIndicator size="large" color="#222266" />
         </View>
       </Modal>
     </KeyboardAvoidingView>
@@ -351,14 +382,22 @@ const styles = StyleSheet.create({
   logo: {
     width: 120,
     height: 120,
-    marginBottom: 40,
+    marginBottom: 12,
   },
-  title: {
-    fontSize: 24,
+  productName: {
+    fontSize: 20,
     fontFamily: "open-sans-bold",
     color: "#222266",
-    marginBottom: 10,
     textAlign: "center",
+    marginBottom: 24,
+  },
+  title: {
+    fontSize: 32,
+    fontFamily: "open-sans-bold",
+    color: "#222266",
+    textAlign: "center",
+    paddingHorizontal: 30,
+    paddingBottom: 8,
   },
   subtitle: {
     fontSize: 16,
@@ -512,12 +551,24 @@ const styles = StyleSheet.create({
     fontFamily: "open-sans-bold",
     textDecorationLine: "underline",
   },
+  loadingOverlay: {
+    flex: 1,
+    backgroundColor: "rgba(245, 247, 250, 0.94)",
+    justifyContent: "center",
+    alignItems: "center",
+  },
   footerText: {
     position: "absolute",
     bottom: 30,
     fontSize: 12,
     color: "#AAA",
     fontFamily: "open-sans",
+  },
+  scannerLoading: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: "rgba(0,0,0,0.55)",
+    justifyContent: "center",
+    alignItems: "center",
   },
   scannerContainer: {
     flex: 1,

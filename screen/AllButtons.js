@@ -22,7 +22,7 @@ import { LinearGradient } from "expo-linear-gradient";
 import SecondaryButton from "../component/SecondaryButton";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 
-const AllButtons = ({ onPanicSuccess, onPanicCancel, activeProduct, externalPanicId }) => {
+const AllButtons = ({ onPanicSuccess, onPanicCancel, activeProduct, externalPanicId, canUseMultimedia = false }) => {
   const navigation = useNavigation();
   const [showProgressBar, setShowProgressBar] = useState(false);
   const [isPanicActive, setIsPanicActive] = useState(false);
@@ -167,29 +167,27 @@ const AllButtons = ({ onPanicSuccess, onPanicCancel, activeProduct, externalPani
       const id = result?.id || result?.event_id || null;
       setLastPanicId(id);
       setIsPanicActive(true);
-      setShowInvitation(true);
+      if (canUseMultimedia) {
+        setShowInvitation(true);
+        invitationProgress.setValue(1);
+        setTimeout(() => {
+          Animated.timing(invitationProgress, {
+            toValue: 0,
+            duration: 30000,
+            useNativeDriver: false,
+          }).start();
+        }, 100);
+      }
 
-      // 3. Iniciar barra de progreso visual para la invitación (30 segundos)
-      invitationProgress.setValue(1);
-      setTimeout(() => {
-        Animated.timing(invitationProgress, {
-          toValue: 0,
-          duration: 30000,
-          useNativeDriver: false,
-        }).start();
-      }, 100);
-
-      // 4. Iniciar temporizador para ocultar la invitación y resetear estados
       if (invitationTimerRef.current) clearTimeout(invitationTimerRef.current);
       invitationTimerRef.current = setTimeout(() => {
         setShowInvitation(false);
-        setIsPanicActive(false); // El botón vuelve a su estado original
-        setLastPanicId(null);    // Limpiamos el ID del evento activo
-        if (typeof onPanicCancel === 'function') onPanicCancel(); // Informamos a App.js
+        setIsPanicActive(false);
+        setLastPanicId(null);
+        if (typeof onPanicCancel === 'function') onPanicCancel();
       }, 30000);
 
-      // 5. Activar multimedia
-      if (onPanicSuccess) onPanicSuccess(result);
+      if (canUseMultimedia && onPanicSuccess) onPanicSuccess(result);
 
       // 3. Obtener y enviar ubicación precisa (Post-Pánico DOCTA 4)
       if (id && activeProduct !== "docta_legacy") {
