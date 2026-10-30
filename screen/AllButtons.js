@@ -5,6 +5,7 @@ import {
   StyleSheet,
   ImageBackground,
   Dimensions,
+  PixelRatio,
   Vibration,
   Pressable,
   Animated,
@@ -34,8 +35,14 @@ const AllButtons = ({ onPanicSuccess, onPanicCancel, activeProduct, externalPani
   const invitationTimerRef = useRef(null);
   const screenWidth = Dimensions.get("window").width;
   const screenHeight = Dimensions.get("window").height;
-  const [altoBox, setAltoBox] = useState(screenHeight / 4 - 20);
+  const [altoBox, setAltoBox] = useState(
+    (screenHeight / 4 - 20) * Math.min(PixelRatio.getFontScale() || 1, 1.25)
+  );
   const [anchBox, setAnchBox] = useState(screenWidth / 10);
+  const buttonScale = Math.min(1, Math.max(0.72, altoBox / 155));
+  const secondaryIconSize = Math.round(40 * buttonScale);
+  const secondaryFontSize = Math.round(15 * buttonScale);
+  const panicIconSize = Math.round(60 * buttonScale);
   const [backgroundImage, setBackgroundImage] = useState("https://i.imgur.com/OGxH3he.png");
 
   // Función para obtener la clave de almacenamiento según el producto (espejada de App.js)
@@ -45,10 +52,10 @@ const AllButtons = ({ onPanicSuccess, onPanicCancel, activeProduct, externalPani
   };
   
   useEffect(() => {
-    // Actualizar altoBox si la altura de la pantalla cambia
-    setAltoBox(screenHeight / 4 - 20);
+    const fontBoost = Math.min(PixelRatio.getFontScale() || 1, 1.5);
+    setAltoBox((screenHeight / 4 - 20) * Math.min(fontBoost, 1.25));
     setAnchBox(screenWidth / 10);
-  }, [screenHeight]); // Solo cuando cambia la altura de la pantalla
+  }, [screenHeight, screenWidth]);
   //console.log("ancho", anchBox, screenWidth, "alto", altoBox, screenHeight);
 
   useEffect(() => {
@@ -90,14 +97,12 @@ const AllButtons = ({ onPanicSuccess, onPanicCancel, activeProduct, externalPani
   const handlePressIn = () => {
     setShowProgressBar(true);
     animatedValue.setValue(0);
-    // Inicia la animación y usa el callback de start
     Animated.timing(animatedValue, {
       toValue: 1,
       duration: 900,
-      useNativeDriver: true,
+      useNativeDriver: false,
     }).start(({ finished }) => {
       if (finished) {
-        // La barra de progreso se llenó
         if (isPanicActive) {
           cancelarEvento();
         } else {
@@ -138,21 +143,34 @@ const AllButtons = ({ onPanicSuccess, onPanicCancel, activeProduct, externalPani
   };
 
   const handlePressOut = () => {
-    // Si se suelta antes de que la animación termine, se detiene
     animatedValue.stopAnimation();
+    animatedValue.setValue(0);
     setShowProgressBar(false);
   };
-  
-  // Interpolación para el efecto de escala (crece desde el centro)
-  const scaleValue = animatedValue.interpolate({
+
+  const fillHeight = animatedValue.interpolate({
     inputRange: [0, 1],
-    outputRange: [0, 1],
+    outputRange: ["0%", "100%"],
   });
-  
-  // Interpolación para la opacidad
-  const opacityValue = animatedValue.interpolate({
-    inputRange: [0, 0.5, 1],
-    outputRange: [0.3, 0.6, 0.9],
+
+  const fillOpacity = animatedValue.interpolate({
+    inputRange: [0, 0.02, 1],
+    outputRange: [0, 1, 1],
+  });
+
+  const ringColor = animatedValue.interpolate({
+    inputRange: [0, 1],
+    outputRange: ["rgba(255,255,255,0.22)", "rgba(255,255,255,1)"],
+  });
+
+  const ringScale = animatedValue.interpolate({
+    inputRange: [0, 1],
+    outputRange: [1, 1.14],
+  });
+
+  const haloOpacity = animatedValue.interpolate({
+    inputRange: [0, 1],
+    outputRange: [0, 0.85],
   });
 
   const enviarEvento = async (eventType) => {
@@ -307,6 +325,8 @@ const AllButtons = ({ onPanicSuccess, onPanicCancel, activeProduct, externalPani
           <SecondaryButton
             onPress={turnOnLight}
             name="wb-sunny"
+            iconSize={secondaryIconSize}
+            fontSize={secondaryFontSize}
             styles={StyleSheet.flatten([
               styles.baseButtonContainer,
               { height: altoBox - 15 },
@@ -318,6 +338,8 @@ const AllButtons = ({ onPanicSuccess, onPanicCancel, activeProduct, externalPani
           <SecondaryButton
             onPress={turnOnSiren}
             name="notifications-active"
+            iconSize={secondaryIconSize}
+            fontSize={secondaryFontSize}
             styles={StyleSheet.flatten([
               styles.baseButtonContainer,
               { height: altoBox - 15 },
@@ -333,6 +355,8 @@ const AllButtons = ({ onPanicSuccess, onPanicCancel, activeProduct, externalPani
         <SecondaryButton
           onPress={disarm}
           name="pause-circle"
+          iconSize={secondaryIconSize}
+          fontSize={secondaryFontSize}
           styles={StyleSheet.flatten([
             styles.baseButtonContainer1,
             { height: altoBox - 20 },
@@ -349,32 +373,62 @@ const AllButtons = ({ onPanicSuccess, onPanicCancel, activeProduct, externalPani
             <View style={[
               styles.panicButton, 
               { height: altoBox + 5 },
-              { backgroundColor: isPanicActive ? "#EB7F27" : GlobalStyles.colors.titlecolor }
+              { backgroundColor: isPanicActive ? "#EB7F27" : GlobalStyles.colors.titlecolor },
+              showProgressBar && styles.panicButtonHolding,
             ]}>
-              {showProgressBar && (
-                <Animated.View 
-                  style={[
-                    styles.progressFillContainer,
-                    {
-                      transform: [{ scale: scaleValue }],
-                      opacity: opacityValue,
-                    }
-                  ]}
-                >
-                  <LinearGradient
-                    colors={["#ffeb3b", "#ffc107", "#ff9800"]}
-                    style={styles.progressFill}
-                    start={{ x: 0, y: 0 }}
-                    end={{ x: 1, y: 1 }}
-                  />
-                </Animated.View>
-              )}
-              <View style={styles.panicButtonContent}>
-                <Ionicons 
-                  name={isPanicActive ? "close-circle" : "warning"} 
-                  size={60} 
-                  color="white" 
+              <Animated.View
+                pointerEvents="none"
+                style={[
+                  styles.progressFill,
+                  { height: fillHeight, opacity: fillOpacity },
+                ]}
+              >
+                <LinearGradient
+                  colors={
+                    isPanicActive
+                      ? ["#FFD08A", "#FF8A1A", "#C43E00"]
+                      : ["#FF8A80", "#FF1744", "#9B0000"]
+                  }
+                  style={StyleSheet.absoluteFill}
+                  start={{ x: 0.5, y: 0 }}
+                  end={{ x: 0.5, y: 1 }}
                 />
+                <View style={styles.fillCap} />
+              </Animated.View>
+              <View style={styles.panicButtonContent}>
+                <View style={styles.panicIconWrap}>
+                  <Animated.View
+                    pointerEvents="none"
+                    style={[
+                      styles.panicIconHalo,
+                      {
+                        width: panicIconSize + 40,
+                        height: panicIconSize + 40,
+                        borderRadius: (panicIconSize + 40) / 2,
+                        opacity: haloOpacity,
+                        transform: [{ scale: ringScale }],
+                      },
+                    ]}
+                  />
+                  <Animated.View
+                    style={[
+                      styles.panicIconRing,
+                      {
+                        width: panicIconSize + 22,
+                        height: panicIconSize + 22,
+                        borderRadius: (panicIconSize + 22) / 2,
+                        borderColor: ringColor,
+                        transform: [{ scale: ringScale }],
+                      },
+                    ]}
+                  >
+                    <Ionicons 
+                      name={isPanicActive ? "close-circle" : "warning"} 
+                      size={panicIconSize} 
+                      color="white" 
+                    />
+                  </Animated.View>
+                </View>
                 <Text style={styles.textButton}>
                   {isPanicActive ? "CANCELAR EVENTO" : "Pánico"}
                 </Text>
@@ -408,6 +462,8 @@ const styles = StyleSheet.create({
   baseButtonContainer: {
     margin: 8,
     width: deviceWidth * 0.42,
+    paddingHorizontal: 8,
+    paddingVertical: 8,
     borderRadius: 26,
     overflow: Platform.OS === "android" ? "hidden" : "visible",
     elevation: 8,
@@ -419,10 +475,10 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
   baseButtonContainer1: {
-    padding: 30,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
     margin: 8,
     width: deviceWidth * 0.9,
-    height: 150,
     borderRadius: 26,
     overflow: Platform.OS === "android" ? "hidden" : "visible",
     elevation: 8,
@@ -462,28 +518,52 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
   },
-  progressFillContainer: {
+  panicButtonHolding: {
+    opacity: 1,
+  },
+  progressFill: {
+    position: "absolute",
+    left: 0,
+    right: 0,
+    bottom: 0,
+    overflow: "hidden",
+  },
+  fillCap: {
     position: "absolute",
     top: 0,
     left: 0,
     right: 0,
-    bottom: 0,
+    height: 5,
+    backgroundColor: "rgba(255,255,255,0.72)",
+  },
+  panicIconWrap: {
     alignItems: "center",
     justifyContent: "center",
+    marginBottom: 6,
   },
-  progressFill: {
-    width: "200%",
-    height: "200%",
-    borderRadius: 1000,
+  panicIconHalo: {
+    position: "absolute",
+    backgroundColor: "rgba(255,255,255,0.42)",
+  },
+  panicIconRing: {
+    borderWidth: 4,
+    alignItems: "center",
+    justifyContent: "center",
   },
   panicButtonContent: {
     alignItems: "center",
     justifyContent: "center",
+    alignSelf: "stretch",
     zIndex: 10,
   },
   textButton: {
     color: "white",
     fontSize: 15,
+    fontFamily: "open-sans",
+    textAlign: "center",
+    alignSelf: "stretch",
+    paddingHorizontal: 12,
+    ...(Platform.OS === "android" ? { includeFontPadding: false } : {}),
   },
   invitationContainer: {
     width: deviceWidth,

@@ -11,11 +11,12 @@ import {
   Modal,
   ScrollView,
   Alert,
+  Animated,
 } from "react-native";
 import { useNavigation, useRoute } from "@react-navigation/native";
 import { StyleSheet } from "react-native";
-import { useState, useEffect } from "react";
-import { postUserData, postToken, getPanicAppByCode, validateCredentials, registerDevice, lookupOnboardingCode, registerOnboarding, recoverOnboarding, closeOtherDevices, buildDocta4LicenseCreated, extractDocta4Role } from "../util/Api";
+import { useState, useEffect, useLayoutEffect, useRef } from "react";
+import { postUserData, postToken, getPanicAppByCode, validateCredentials, registerDevice, lookupOnboardingCode, registerOnboarding, recoverOnboarding, closeOtherDevices, buildDocta4LicenseCreated, extractDocta4Role, DOCTA4_ROLE_MULTIMEDIA } from "../util/Api";
 import { extractOnboardingCode } from "../util/onboardingCode";
 import { registerForPushNotificationsAsync } from "../util/Notifications";
 import { MaterialIcons, Ionicons } from "@expo/vector-icons";
@@ -145,6 +146,41 @@ function getFieldIcon(field) {
   return "edit";
 }
 
+function AnimatedFieldIcon({ name, active }) {
+  const scale = useRef(new Animated.Value(1)).current;
+  const rotate = useRef(new Animated.Value(0)).current;
+
+  useEffect(() => {
+    Animated.spring(scale, {
+      toValue: active ? 1.22 : 1,
+      friction: 5,
+      tension: 140,
+      useNativeDriver: true,
+    }).start();
+
+    if (active) {
+      Animated.sequence([
+        Animated.timing(rotate, { toValue: 1, duration: 90, useNativeDriver: true }),
+        Animated.timing(rotate, { toValue: -1, duration: 90, useNativeDriver: true }),
+        Animated.timing(rotate, { toValue: 0, duration: 90, useNativeDriver: true }),
+      ]).start();
+    } else {
+      Animated.timing(rotate, { toValue: 0, duration: 120, useNativeDriver: true }).start();
+    }
+  }, [active, rotate, scale]);
+
+  const spin = rotate.interpolate({
+    inputRange: [-1, 0, 1],
+    outputRange: ["-14deg", "0deg", "14deg"],
+  });
+
+  return (
+    <Animated.View style={[styles.icon, { transform: [{ scale }, { rotate: spin }] }]}>
+      <MaterialIcons name={name} size={24} color={active ? "#222266" : "#000"} />
+    </Animated.View>
+  );
+}
+
 function Configuration({ onAuthorized, activeProduct, initialData, initialOnboardingCode, onBackToCode }) {
   const { width, height } = Dimensions.get("window");
   const navigation = useNavigation();
@@ -170,6 +206,7 @@ function Configuration({ onAuthorized, activeProduct, initialData, initialOnboar
   const [isButtonEnabled, setIsButtonEnabled] = useState(false);
   const [isContinueButtonEnabled, setContinueButtonEnabled] = useState(false);
   const [isTermsAccepted, setIsTermsAccepted] = useState(false);
+  const [focusedField, setFocusedField] = useState(null);
   const [isTermsModalVisible, setIsTermsModalVisible] = useState(false);
   const [panicAppData, setPanicAppData] = useState(null);
   const [masterConfig, setMasterConfig] = useState(null);
@@ -178,6 +215,16 @@ function Configuration({ onAuthorized, activeProduct, initialData, initialOnboar
   const [onboardingInfo, setOnboardingInfo] = useState(null); // onboardingToken, userFields, etc.
   const [userProfile, setUserProfile] = useState({}); // Valores de los campos dinámicos
   const [onboardingCode, setOnboardingCode] = useState(""); // El código de 7 dígitos
+  const titleOpacity = useRef(new Animated.Value(0)).current;
+
+  useEffect(() => {
+    Animated.timing(titleOpacity, {
+      toValue: 1,
+      duration: 2400,
+      delay: 450,
+      useNativeDriver: true,
+    }).start();
+  }, [titleOpacity]);
 
   // Efecto para procesar datos iniciales (Nuevo Flujo)
   useEffect(() => {
@@ -353,23 +400,26 @@ function Configuration({ onAuthorized, activeProduct, initialData, initialOnboar
         }
 
         if (!result) {
-          setIsLoading(false);
-          const wantsHome = await promptAtHome();
           let home_location = null;
-          if (wantsHome) {
-            try {
-              const { status } = await Location.requestForegroundPermissionsAsync();
-              if (status === "granted") {
-                const pos = await Location.getCurrentPositionAsync({
-                  accuracy: Location.Accuracy.Balanced,
-                });
-                home_location = { lat: pos.coords.latitude, lon: pos.coords.longitude };
+          const rolAlta = extractDocta4Role(onboardingInfo, masterConfig);
+          if (rolAlta === DOCTA4_ROLE_MULTIMEDIA) {
+            setIsLoading(false);
+            const wantsHome = await promptAtHome();
+            if (wantsHome) {
+              try {
+                const { status } = await Location.requestForegroundPermissionsAsync();
+                if (status === "granted") {
+                  const pos = await Location.getCurrentPositionAsync({
+                    accuracy: Location.Accuracy.Balanced,
+                  });
+                  home_location = { lat: pos.coords.latitude, lon: pos.coords.longitude };
+                }
+              } catch (locError) {
+                console.warn("No se pudo obtener home_location:", locError);
               }
-            } catch (locError) {
-              console.warn("No se pudo obtener home_location:", locError);
             }
+            setIsLoading(true);
           }
-          setIsLoading(true);
 
           const registerData = {
             ...deviceMeta,
@@ -679,8 +729,39 @@ console.log("¿Es accepted?:", result?.licenseCreated?.status === "accepted");
       await onBackToCode();
       return;
     }
-    if (currentStep > 1) setCurrentStep(currentStep - 1);
+    if (currentStep > 1) setCurrentStep(1);
   };
+
+  useLayoutEffect(() => {
+    const canGoBack = typeof onBackToCode === "function" || currentStep > 1;
+    navigation.setOptions({
+      headerTintColor: "#FFFFFF",
+      headerTitle: () => (
+        <Animated.Text
+          style={{
+            color: "#FFFFFF",
+            fontSize: 18,
+            fontFamily: "open-sans-bold",
+            opacity: titleOpacity,
+          }}
+        >
+          Configuración
+        </Animated.Text>
+      ),
+      headerLeft: canGoBack
+        ? () => (
+            <TouchableOpacity
+              onPress={previousStep}
+              accessibilityRole="button"
+              accessibilityLabel="Volver"
+              style={{ paddingHorizontal: 12, paddingVertical: 8 }}
+            >
+              <MaterialIcons name="arrow-back" size={34} color="#FFFFFF" />
+            </TouchableOpacity>
+          )
+        : () => null,
+    });
+  }, [currentStep, navigation, onBackToCode, titleOpacity]);
 
   const renderStep = () => {
     switch (currentStep) {
@@ -731,8 +812,10 @@ console.log("¿Es accepted?:", result?.licenseCreated?.status === "accepted");
                   maxLength={7}
                   onChangeText={setOnboardingCode}
                   value={onboardingCode}
+                  onFocus={() => setFocusedField("onboardingCode")}
+                  onBlur={() => setFocusedField(null)}
                 />
-                <MaterialIcons name="dialpad" size={24} color="#000" style={styles.icon} />
+                <AnimatedFieldIcon name="dialpad" active={focusedField === "onboardingCode"} />
               </View>
 
               <TouchableOpacity 
@@ -808,13 +891,10 @@ console.log("¿Es accepted?:", result?.licenseCreated?.status === "accepted");
                           setUserProfile(prev => ({ ...prev, [field]: text }));
                         }}
                         value={userProfile[field]}
+                        onFocus={() => setFocusedField(field)}
+                        onBlur={() => setFocusedField(null)}
                       />
-                      <MaterialIcons
-                        name={getFieldIcon(field)}
-                        size={24}
-                        color="#000"
-                        style={styles.icon}
-                      />
+                      <AnimatedFieldIcon name={getFieldIcon(field)} active={focusedField === field} />
                     </View>
                   ))
                 ) : (
@@ -827,8 +907,10 @@ console.log("¿Es accepted?:", result?.licenseCreated?.status === "accepted");
                         placeholderTextColor="#616060"
                         onChangeText={(text) => handleChange("Vecino", text)}
                         value={licencias.Vecino}
+                        onFocus={() => setFocusedField("Vecino")}
+                        onBlur={() => setFocusedField(null)}
                       />
-                      <MaterialIcons name="person" size={24} color="#000" style={styles.icon} />
+                      <AnimatedFieldIcon name="person" active={focusedField === "Vecino"} />
                     </View>
                     <View style={styles.textContainer}>
                       <TextInput
@@ -837,8 +919,10 @@ console.log("¿Es accepted?:", result?.licenseCreated?.status === "accepted");
                         keyboardType="numeric"
                         onChangeText={(text) => handleChange("Documento", text)}
                         value={licencias.Documento}
+                        onFocus={() => setFocusedField("Documento")}
+                        onBlur={() => setFocusedField(null)}
                       />
-                      <MaterialIcons name="badge" size={24} color="#000" style={styles.icon} />
+                      <AnimatedFieldIcon name="badge" active={focusedField === "Documento"} />
                     </View>
                     <View style={styles.textContainer}>
                       <TextInput
@@ -846,8 +930,10 @@ console.log("¿Es accepted?:", result?.licenseCreated?.status === "accepted");
                         placeholder="Ingrese Ubicación"
                         onChangeText={(text) => handleChange("Direccion", text)}
                         value={licencias.Direccion}
+                        onFocus={() => setFocusedField("Direccion")}
+                        onBlur={() => setFocusedField(null)}
                       />
-                      <MaterialIcons name="location-on" size={24} color="#000" style={styles.icon} />
+                      <AnimatedFieldIcon name="location-on" active={focusedField === "Direccion"} />
                     </View>
                     <View style={styles.textContainer}>
                       <TextInput
@@ -855,8 +941,10 @@ console.log("¿Es accepted?:", result?.licenseCreated?.status === "accepted");
                         placeholder="Ingrese su barrio"
                         onChangeText={(text) => handleChange("Barrio", text)}
                         value={licencias.Barrio}
+                        onFocus={() => setFocusedField("Barrio")}
+                        onBlur={() => setFocusedField(null)}
                       />
-                      <MaterialIcons name="home" size={24} color="#000" style={styles.icon} />
+                      <AnimatedFieldIcon name="home" active={focusedField === "Barrio"} />
                     </View>
                   </>
                 )}
@@ -925,16 +1013,7 @@ console.log("¿Es accepted?:", result?.licenseCreated?.status === "accepted");
             </View>
           ) : (
             <View style={styles.stepActions}>
-              <TouchableOpacity
-                style={styles.backAction}
-                onPress={previousStep}
-              >
-                <MaterialIcons name="arrow-back" size={22} color="#222266" />
-                <Text style={styles.backActionText}>ANTERIOR</Text>
-              </TouchableOpacity>
-              <View style={styles.saveAction}>
-                <SaveButton onPress={saveData} isEnabled={isButtonEnabled} />
-              </View>
+              <SaveButton onPress={saveData} isEnabled={isButtonEnabled} />
             </View>
           )}
         </View>
@@ -1020,28 +1099,10 @@ const styles = StyleSheet.create({
     alignSelf: "stretch",
   },
   stepActions: {
-    flexDirection: "row",
-    alignItems: "center",
     marginTop: "auto",
     paddingHorizontal: 12,
     paddingTop: 12,
     paddingBottom: 96,
-  },
-  backAction: {
-    flexDirection: "row",
-    alignItems: "center",
-    paddingVertical: 14,
-    paddingHorizontal: 8,
-    marginRight: 12,
-  },
-  backActionText: {
-    fontSize: 15,
-    color: "#222266",
-    marginLeft: 6,
-    fontFamily: "open-sans-bold",
-  },
-  saveAction: {
-    flex: 1,
   },
   imputContainer: {
     padding: 20,

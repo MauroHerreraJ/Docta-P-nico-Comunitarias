@@ -10,10 +10,11 @@ import { NavigationContainer, createNavigationContainerRef } from "@react-naviga
 import { createNativeStackNavigator } from "@react-navigation/native-stack";
 import { createBottomTabNavigator } from "@react-navigation/bottom-tabs";
 import { Ionicons } from "@expo/vector-icons";
-import { Image, Modal, View, Text, TouchableOpacity, StyleSheet, Alert, Animated, Platform, AppState } from "react-native";
+import { Image, Modal, View, Text, TouchableOpacity, Pressable, StyleSheet, Alert, Animated, Platform, AppState } from "react-native";
+import { useSafeAreaInsets, SafeAreaProvider } from "react-native-safe-area-context";
 import { useFonts } from "expo-font";
 import * as SplashScreen from "expo-splash-screen";
-import { useEffect, useState, useRef } from "react";
+import { useEffect, useState, useRef, useCallback } from "react";
 import * as Linking from 'expo-linking';
 import * as Application from 'expo-application';
 
@@ -62,6 +63,59 @@ const isChatNotification = (content) => {
   const tipo = getNotificationTipo(content);
   if (tipo === "chat") return true;
   return /tenés un mensaje nuevo|tenes un mensaje nuevo|mensaje nuevo/i.test(content?.body || "");
+};
+
+const isTruthyFlag = (value) =>
+  value === true || value === "true" || value === "1";
+
+const isSelfAlarmNotification = (content) => {
+  const data = parseNotificationData(content);
+  return isTruthyFlag(data.isSelf ?? data.is_self ?? data.self);
+};
+
+const getStreetEventCode = (content) => {
+  const data = parseNotificationData(content);
+  const raw = String(data.eventCode ?? data.event_code ?? data.code ?? "").trim();
+  if (raw === "104" || raw === "120") return raw;
+
+  const text = [
+    content?.title,
+    content?.body,
+    data.title,
+    data.body,
+  ]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
+
+  if (/desactiv|apag[oó]|se apag/.test(text)) return "104";
+  return "120";
+};
+
+const getStreetAlertCopy = (content) => {
+  const data = parseNotificationData(content);
+  const eventCode = getStreetEventCode(content);
+  const titleFromPayload = String(content?.title || data.title || "").trim();
+  const bodyFromPayload = String(content?.body || data.body || "").trim();
+  const titleLooksActivated = /alarma activada/i.test(titleFromPayload);
+
+  if (eventCode === "104") {
+    return {
+      eventCode,
+      title: titleFromPayload && !titleLooksActivated
+        ? titleFromPayload
+        : "Alarma desactivada",
+      body: bodyFromPayload || "El equipo se desactivó en la calle.",
+      bannerTitle: "Equipo desactivado",
+    };
+  }
+
+  return {
+    eventCode,
+    title: titleFromPayload || "Alarma activada",
+    body: bodyFromPayload || "La alarma de su zona se ha activado.",
+    bannerTitle: "Equipo activado",
+  };
 };
 
 const getCurrentRouteName = () => {
@@ -185,14 +239,75 @@ function LicenseDeletedModal({ visible, onAccept }) {
   );
 }
 
+function SelfAlarmBanner({ visible, title, message, onDismiss }) {
+  const insets = useSafeAreaInsets();
+  const bannerHeight = Math.max(120, insets.top + 96);
+  const hiddenY = -(bannerHeight + 24);
+  const translateY = useRef(new Animated.Value(hiddenY)).current;
+  const timerRef = useRef(null);
+
+  useEffect(() => {
+    if (timerRef.current) {
+      clearTimeout(timerRef.current);
+      timerRef.current = null;
+    }
+    if (visible) {
+      Animated.timing(translateY, {
+        toValue: 0,
+        duration: 320,
+        useNativeDriver: true,
+      }).start();
+      timerRef.current = setTimeout(onDismiss, 10000);
+    } else {
+      Animated.timing(translateY, {
+        toValue: hiddenY,
+        duration: 250,
+        useNativeDriver: true,
+      }).start();
+    }
+    return () => {
+      if (timerRef.current) clearTimeout(timerRef.current);
+    };
+  }, [visible, onDismiss, translateY, hiddenY]);
+
+  return (
+    <Animated.View
+      pointerEvents={visible ? "auto" : "none"}
+      style={[
+        styles.selfBanner,
+        {
+          paddingTop: insets.top,
+          minHeight: bannerHeight,
+          transform: [{ translateY }],
+        },
+      ]}
+    >
+      <Pressable onPress={onDismiss} style={styles.selfBannerInner}>
+        <Ionicons name="checkmark-circle" size={28} color="#FFFFFF" />
+        <View style={styles.selfBannerTextWrap}>
+          <Text style={styles.selfBannerTitle}>{title || "Equipo activado"}</Text>
+          <Text style={styles.selfBannerBody} numberOfLines={2}>
+            {message || "La alarma ha sonado exitosamente en la calle."}
+          </Text>
+        </View>
+      </Pressable>
+    </Animated.View>
+  );
+}
+
 function EventModal({ visible, onClose, eventData, onOpenChat }) {
   if (!eventData) return null;
 
   const isChat = eventData.kind === "chat";
+  const isDisarm = eventData.eventCode === "104";
 
   // Función para resaltar el número de equipo en el cuerpo del mensaje
   const renderBody = (text) => {
-    if (!text) return "La alarma ha sonado exitosamente en la calle.";
+    if (!text) {
+      return isDisarm
+        ? "El equipo se desactivó en la calle."
+        : "La alarma ha sonado exitosamente en la calle.";
+    }
     
     // Buscamos el número de equipo (ej: 1005)
     const teamMatch = text.match(/(\d{4})/);
@@ -219,12 +334,12 @@ function EventModal({ visible, onClose, eventData, onOpenChat }) {
       <View style={styles.modalOverlay}>
         <View style={styles.modalContent}>
           <Ionicons
-            name={isChat ? "chatbubbles" : "notifications-circle"}
+            name={isChat ? "chatbubbles" : isDisarm ? "checkmark-circle" : "notifications-circle"}
             size={80}
-            color={isChat ? "#222266" : "#E74C3C"}
+            color={isChat ? "#222266" : isDisarm ? "#2E7D32" : "#E74C3C"}
           />
           <Text style={styles.modalTitle}>
-            {isChat ? "Tenés un mensaje nuevo" : (eventData.title || "!Alarma Activada!")}
+            {isChat ? "Tenés un mensaje nuevo" : (eventData.title || "Alarma activada")}
           </Text>
           {isChat ? (
             <Text style={styles.modalBody}>La central de monitoreo te escribió.</Text>
@@ -707,6 +822,7 @@ function App() {
   const [expoPushToken, setExpoPushToken] = useState('');
   const [notification, setNotification] = useState(false);
   const [showEventModal, setShowEventModal] = useState(false);
+  const [showSelfBanner, setShowSelfBanner] = useState(false);
   const [eventData, setEventData] = useState(null);
   const [pendingOpenChat, setPendingOpenChat] = useState(false);
   const [showChatTab, setShowChatTab] = useState(false);
@@ -772,6 +888,10 @@ function App() {
     setLicenseDisabled(false);
   };
 
+  const dismissSelfBanner = useCallback(() => {
+    setShowSelfBanner(false);
+  }, []);
+
   useEffect(() => {
     const markHandled = async (identifier) => {
       if (!identifier) return true;
@@ -818,12 +938,23 @@ function App() {
         return;
       }
 
-      const body = content.body || "La alarma de su zona se ha activado.";
+      const data = parseNotificationData(content);
+      const copy = getStreetAlertCopy(content);
       setEventData({
-        title: "!Alarma Activada!",
-        body: body,
-        data: content.data || {}
+        title: copy.title,
+        body: copy.body,
+        bannerTitle: copy.bannerTitle,
+        eventCode: copy.eventCode,
+        data
       });
+
+      if (isSelfAlarmNotification(content)) {
+        setShowEventModal(false);
+        setShowSelfBanner(true);
+        return;
+      }
+
+      setShowSelfBanner(false);
       setShowEventModal(true);
     };
 
@@ -1142,6 +1273,7 @@ function App() {
     return null; // or a custom loading component
   }
   return (
+    <SafeAreaProvider>
     <>
       <StatusBar style="dark" />
       <NavigationContainer ref={navigationRef}>
@@ -1234,6 +1366,12 @@ function App() {
         onAccept={dismissLicenseDisabled}
       />
       <LicenseDeletedModal visible={licenseDeleted} onAccept={acceptLicenseDeleted} />
+      <SelfAlarmBanner
+        visible={showSelfBanner && !licenseDisabled && !licenseDeleted}
+        title={eventData?.bannerTitle}
+        message={eventData?.body}
+        onDismiss={dismissSelfBanner}
+      />
       <EventModal 
         visible={showEventModal && !licenseDisabled && !licenseDeleted} 
         onClose={() => {
@@ -1252,10 +1390,47 @@ function App() {
         }}
       />
     </>
+    </SafeAreaProvider>
   );
 }
 
 const styles = StyleSheet.create({
+  selfBanner: {
+    position: "absolute",
+    top: 0,
+    left: 0,
+    right: 0,
+    zIndex: 9999,
+    backgroundColor: "#222266",
+    paddingHorizontal: 16,
+    paddingBottom: 16,
+    elevation: 20,
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.25,
+    shadowRadius: 8,
+  },
+  selfBannerInner: {
+    flex: 1,
+    flexDirection: "row",
+    alignItems: "center",
+    minHeight: 72,
+  },
+  selfBannerTextWrap: {
+    flex: 1,
+    marginLeft: 12,
+  },
+  selfBannerTitle: {
+    color: "#FFFFFF",
+    fontFamily: "open-sans-bold",
+    fontSize: 16,
+  },
+  selfBannerBody: {
+    color: "rgba(255,255,255,0.9)",
+    fontFamily: "open-sans",
+    fontSize: 13,
+    marginTop: 2,
+  },
   modalOverlay: {
     flex: 1,
     backgroundColor: 'rgba(0, 0, 0, 0.7)',

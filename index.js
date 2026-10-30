@@ -1,4 +1,7 @@
 import { registerRootComponent } from 'expo';
+import { applyAppTextDefaults } from './constans/typography';
+
+applyAppTextDefaults();
 
 import App from './App';
 

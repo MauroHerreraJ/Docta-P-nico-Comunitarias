@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import {
   StyleSheet,
   View,
@@ -11,6 +11,7 @@ import {
   Alert,
   ActivityIndicator,
   Modal,
+  Animated,
 } from "react-native";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { activateMasterCode, getPanicAppByCode, lookupOnboardingCode, extractDocta4Role } from "../util/Api";
@@ -29,6 +30,16 @@ function MasterCode({ onActivated, navigation, initialCode }) {
   const [permission, requestPermission] = useCameraPermissions();
   const [isScannerVisible, setIsScannerVisible] = useState(false);
   const [scanned, setScanned] = useState(false);
+  const titleOpacity = useRef(new Animated.Value(0)).current;
+
+  useEffect(() => {
+    Animated.timing(titleOpacity, {
+      toValue: 1,
+      duration: 2400,
+      delay: 450,
+      useNativeDriver: true,
+    }).start();
+  }, [titleOpacity]);
 
   // Auto-procesar código inicial (Deep Link)
   React.useEffect(() => {
@@ -213,9 +224,9 @@ function MasterCode({ onActivated, navigation, initialCode }) {
       behavior={Platform.OS === "ios" ? "padding" : "height"}
       style={styles.container}
     >
-      <Text style={[styles.title, { paddingTop: insets.top + 40 }]}>
+      <Animated.Text style={[styles.title, { paddingTop: insets.top + 40, opacity: titleOpacity }]}>
         Bienvenido!
-      </Text>
+      </Animated.Text>
       <View style={styles.content}>
         <Image
           source={require("../assets/logonuevo.png")}
@@ -225,12 +236,13 @@ function MasterCode({ onActivated, navigation, initialCode }) {
         <Text style={styles.productName}>Docta Comunitarias</Text>
 
         <Text style={styles.subtitle}>
-          Para comenzar, escanee el código QR del sticker o ingrese el código de 7 dígitos.
+          Para comenzar, escanee el código QR del sticker.
         </Text>
 
-        <View style={styles.buttonRow}>
-          <TouchableOpacity 
+        <View style={styles.buttonColumn}>
+          <TouchableOpacity
             style={[styles.actionButton, styles.qrButton]}
+            activeOpacity={0.85}
             onPress={async () => {
               const { granted, canAskAgain } = await requestPermission();
               if (granted) {
@@ -256,12 +268,16 @@ function MasterCode({ onActivated, navigation, initialCode }) {
             <Text style={styles.actionButtonText}>ESCANEAR QR</Text>
           </TouchableOpacity>
 
-          <TouchableOpacity 
-            style={[styles.actionButton, styles.manualButton]}
+          <Text style={styles.secondaryHint}>¿No funciona la cámara?</Text>
+          <TouchableOpacity
+            style={[styles.actionButton, styles.secondaryButton]}
+            activeOpacity={0.85}
             onPress={() => setShowManualInput(true)}
           >
-            <MaterialIcons name="dialpad" size={40} color="white" />
-            <Text style={styles.actionButtonText}>INGRESAR CÓDIGO</Text>
+            <MaterialIcons name="dialpad" size={22} color="white" />
+            <Text style={[styles.actionButtonText, styles.secondaryButtonText]}>
+              INGRESAR CÓDIGO
+            </Text>
           </TouchableOpacity>
         </View>
 
@@ -407,16 +423,14 @@ const styles = StyleSheet.create({
     marginBottom: 30,
     paddingHorizontal: 20,
   },
-  buttonRow: {
-    flexDirection: "row",
-    justifyContent: "space-between",
+  buttonColumn: {
     width: "100%",
-    paddingHorizontal: 10,
+    alignItems: "center",
     marginTop: 20,
   },
   actionButton: {
-    width: "48%",
-    height: 140,
+    width: "100%",
+    height: 130,
     borderRadius: 20,
     justifyContent: "center",
     alignItems: "center",
@@ -429,8 +443,25 @@ const styles = StyleSheet.create({
   qrButton: {
     backgroundColor: "#222266",
   },
-  manualButton: {
+  secondaryHint: {
+    marginTop: 76,
+    marginBottom: 8,
+    color: "#666",
+    fontSize: 13,
+    fontFamily: "open-sans",
+    textAlign: "center",
+  },
+  secondaryButton: {
+    width: "58%",
+    height: 62,
+    borderRadius: 14,
     backgroundColor: "#0F76C4",
+    elevation: 4,
+    shadowOpacity: 0.2,
+  },
+  secondaryButtonText: {
+    marginTop: 4,
+    fontSize: 11,
   },
   actionButtonText: {
     color: "white",

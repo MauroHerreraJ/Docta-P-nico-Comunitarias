@@ -1,17 +1,25 @@
-import { View, Pressable, StyleSheet, Text } from "react-native"
+import { View, Pressable, StyleSheet, Text, Platform } from "react-native"
 import { MaterialIcons } from "@expo/vector-icons";
 
 
-function SecondaryButton({ onPress, name, styles: containerStyles, text, text2 }) {
-    return <View >
+function SecondaryButton({ onPress, name, styles: containerStyles, text, text2, iconSize = 40, fontSize = 15 }) {
+    return (
         <Pressable onPress={onPress} style={({ pressed }) => pressed && localStyles.pressed}>
             <View style={containerStyles}>
-                <MaterialIcons name={name} size={40} color="white" />
-                <Text style={localStyles.textButton}>{text}</Text>
-                <Text style={localStyles.textButton}>{text2}</Text>
+                <MaterialIcons name={name} size={iconSize} color="white" />
+                {!!text && (
+                    <Text style={[localStyles.textButton, { fontSize }]}>
+                        {text}
+                    </Text>
+                )}
+                {!!text2 && (
+                    <Text style={[localStyles.textButton, { fontSize }]}>
+                        {text2}
+                    </Text>
+                )}
             </View>
         </Pressable>
-    </View>
+    );
 }
 
 export default SecondaryButton;
@@ -22,7 +30,10 @@ const localStyles = StyleSheet.create({
     },
     textButton: {
         color: "white",
-        fontSize: 15,
-        fontWeight: "500"
+        fontFamily: "open-sans",
+        textAlign: "center",
+        alignSelf: "stretch",
+        paddingHorizontal: 10,
+        ...(Platform.OS === "android" ? { includeFontPadding: false } : {}),
     }
 })
